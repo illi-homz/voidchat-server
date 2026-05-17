@@ -2,28 +2,42 @@
 set -euo pipefail
 
 # ==============================================================
-# VoidChat Server — автоматический деплой на VPS
+# VoidChat Server — Automated Deploy
+# Одна команда: установка + автозапуск + отказоустойчивость
 #
 # Использование:
-#   curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy.sh | bash
+#   curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy.sh | sudo bash
 # ==============================================================
 
 REPO_URL="https://github.com/illi-homz/voidchat-server.git"
 SERVER_DIR="$HOME/voidchat-server"
 NODE_VERSION="22"
+PORT="${PORT:-3001}"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
+BOLD='\033[1m'
 
 log()  { echo -e "${GREEN}[✓]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 err()  { echo -e "${RED}[✗]${NC} $1"; }
 
+echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║      VoidChat Server — Automated Deploy     ║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+
 # --------------------------------------------------------------
-# 1. Проверка OS
+# 1. Root check & OS detection
 # --------------------------------------------------------------
+if [ "$EUID" -ne 0 ]; then
+    err "Этот скрипт должен быть запущен с правами root."
+    err "Используйте: curl ... | sudo bash"
+    exit 1
+fi
+
 if [ ! -f /etc/os-release ]; then
     err "Поддерживается только Linux (Ubuntu/Debian)."
     exit 1
@@ -35,15 +49,25 @@ if [ "$ID" != "ubuntu" ] && [ "$ID" != "debian" ]; then
     exit 1
 fi
 
-log "ОС: $NAME $VERSION_ID"
+log "ОС: $NAME $VERSION_ID ($(uname -m))"
+log "CPU: $(nproc) ядра/ядер, RAM: $(free -m | awk '/Mem:/{print $2}') MB"
 
 # --------------------------------------------------------------
-# 2. Node.js
+# 2. Обновление пакетов (тихо, без интерактива)
+# --------------------------------------------------------------
+log "Обновляем системные пакеты..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq &>/dev/null
+apt-get upgrade -y -qq &>/dev/null
+log "Система обновлена"
+
+# --------------------------------------------------------------
+# 3. Установка Node.js 22+
 # --------------------------------------------------------------
 INSTALL_NODE=false
 if command -v node &>/dev/null; then
-    INSTALLED_NODE=$(node -v | sed 's/v//' | cut -d. -f1)
-    if [ "$INSTALLED_NODE" -ge 22 ]; then
+    INSTALLED_MAJOR=$(node -v | sed 's/v//' | cut -d. -f1)
+    if [ "$INSTALLED_MAJOR" -ge 22 ]; then
         log "Node.js уже установлен: $(node -v)"
     else
         warn "Node.js $(node -v) устарел. Обновляем до v$NODE_VERSION..."
@@ -55,101 +79,200 @@ else
 fi
 
 if [ "$INSTALL_NODE" = true ]; then
-    log "Устанавливаем Node.js $NODE_VERSION..."
     curl -fsSL https://deb.nodesource.com/setup_${NODE_VERSION}.x | bash - &>/dev/null
     apt-get install -y nodejs &>/dev/null
     log "Node.js $(node -v) установлен"
 fi
 
 # --------------------------------------------------------------
-# 3. Git
+# 4. Установка Git
 # --------------------------------------------------------------
 if ! command -v git &>/dev/null; then
-    warn "Git не найден. Устанавливаем..."
     apt-get install -y git &>/dev/null
-    log "Git установлен"
+fi
+log "Git: $(git --version)"
+
+# --------------------------------------------------------------
+# 5. Установка build-essential (нужен для нативных модулей)
+# --------------------------------------------------------------
+if ! command -v make &>/dev/null; then
+    apt-get install -y build-essential &>/dev/null
+    log "build-essential установлен"
 fi
 
 # --------------------------------------------------------------
-# 4. Загрузка сервера
+# 6. Клонирование / обновление репозитория
 # --------------------------------------------------------------
 if [ -d "$SERVER_DIR" ]; then
     warn "Директория $SERVER_DIR уже существует. Обновляем..."
     cd "$SERVER_DIR"
+    git stash --include-untracked &>/dev/null || true
     git pull --ff-only &>/dev/null || {
-        err "Не удалось обновить. Пропускаем."
+        err "Не удалось обновить репозиторий. Проверьте вручную: cd $SERVER_DIR && git status"
+        exit 1
     }
 else
     log "Клонируем репозиторий..."
     git clone --depth 1 "$REPO_URL" "$SERVER_DIR" &>/dev/null
-    log "Репозиторий склонирован"
 fi
 
 cd "$SERVER_DIR"
 
 # --------------------------------------------------------------
-# 5. Зависимости
+# 7. Установка зависимостей (сначала ВСЕ, включая dev — нужны для сборки)
 # --------------------------------------------------------------
-log "Устанавливаем зависимости..."
-npm install --omit=dev &>/dev/null
-log "Зависимости установлены"
+log "Устанавливаем зависимости (включая TypeScript для сборки)..."
+npm install &>/dev/null
+log "npm install завершён"
 
-# --------------------------------------------------------------
-# 6. Сборка
-# --------------------------------------------------------------
-log "Собираем TypeScript..."
+log "Собираем TypeScript → dist/server.js..."
 npm run build &>/dev/null
 log "Сборка завершена"
 
+log "Удаляем dev-зависимости (TypeScript, tsx, eslint...) — экономия места..."
+npm prune --omit=dev &>/dev/null
+log "Dev-зависимости удалены"
+
 # --------------------------------------------------------------
-# 7. pm2
+# 8. Установка pm2
 # --------------------------------------------------------------
 if ! command -v pm2 &>/dev/null; then
-    log "Устанавливаем pm2..."
+    log "Устанавливаем pm2 глобально..."
     npm install -g pm2 &>/dev/null
 fi
 
+PM2_VERSION=$(pm2 -v 2>/dev/null || echo "?")
+log "pm2 v$PM2_VERSION"
+
 # --------------------------------------------------------------
-# 8. Фаервол
+# 9. Настройка UFW (фаервол)
 # --------------------------------------------------------------
 if command -v ufw &>/dev/null; then
-    if ! ufw status | grep -q "active"; then
-        warn "UFW не активен. Рекомендуется включить: ufw enable"
-    fi
+    ufw allow ssh &>/dev/null || true
+    ufw allow "$PORT/tcp" &>/dev/null || true
 
-    if ! ufw status | grep -q "3001"; then
-        log "Открываем порт 3001 в UFW..."
-        ufw allow 3001/tcp &>/dev/null
+    if ufw status | grep -q "Status: inactive"; then
+        log "Включаем UFW..."
+        ufw --force enable &>/dev/null
     fi
+    log "UFW активен, порт $PORT/tcp открыт (SSH сохранён)"
 else
-    warn "UFW не установлен. Установи: apt-get install ufw"
+    warn "UFW не установлен. Устанавливаем..."
+    apt-get install -y ufw &>/dev/null
+    ufw allow ssh &>/dev/null || true
+    ufw allow "$PORT/tcp" &>/dev/null || true
+    ufw --force enable &>/dev/null
+    log "UFW установлен и включён, порт $PORT/tcp открыт"
 fi
 
 # --------------------------------------------------------------
-# 9. Запуск
+# 10. Системные лимиты (Socket.IO держит много соединений)
+# --------------------------------------------------------------
+if grep -q "nofile" /etc/security/limits.d/99-voidchat.conf 2>/dev/null; then
+    log "Лимит open files уже настроен"
+else
+    log "Настраиваем лимит open files (65536) — нужно для Socket.IO..."
+    cat > /etc/security/limits.d/99-voidchat.conf <<'EOF'
+* soft nofile 65536
+* hard nofile 65536
+root soft nofile 65536
+root hard nofile 65536
+EOF
+    log "Лимит open files: 65536"
+fi
+
+# Применяем для текущей сессии
+ulimit -n 65536 2>/dev/null || true
+
+# --------------------------------------------------------------
+# 11. Настройка автозапуска pm2 (survive reboot)
+# --------------------------------------------------------------
+log "Настраиваем автозапуск pm2 через systemd (переживёт reboot)..."
+pm2 startup systemd -u root --hp /root 2>/dev/null || {
+    # fallback: парсим вывод команды
+    pm2 startup systemd 2>/dev/null | tail -1 | bash 2>/dev/null || true
+}
+log "pm2 startup настроен"
+
+# --------------------------------------------------------------
+# 12. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
 # --------------------------------------------------------------
 log "Запускаем сервер через pm2..."
+
 pm2 delete voidchat-server 2>/dev/null || true
-pm2 start dist/server.js --name voidchat-server &>/dev/null
+
+# Создаём директорию для логов (pm2 не создаёт её сам)
+mkdir -p ~/voidchat-server/logs
+
+# fork mode — единственно правильный режим для 1 vCPU:
+#   - Node.js однопоточный, кластеризация на 1 ядре даст только оверхед
+#   - Socket.IO асинхронный — 1 процесс держит тысячи соединений
+pm2 start dist/server.js \
+    --name voidchat-server \
+    --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
+    --max-memory-restart "200M" \
+    --restart-delay 3000 \
+    --max-restarts 5 \
+    --env NODE_ENV=production \
+    --merge-logs \
+    --output ~/voidchat-server/logs/out.log \
+    --error ~/voidchat-server/logs/err.log
+
+log "Сервер запущен (fork, 1 процесс, лимит памяти 200MB)"
+
+# --------------------------------------------------------------
+# 13. Лог-ротация (чтобы логи не съели диск)
+# --------------------------------------------------------------
+pm2 install pm2-logrotate &>/dev/null || true
+pm2 set pm2-logrotate:max_size 10M &>/dev/null || true
+pm2 set pm2-logrotate:retain 7 &>/dev/null || true
+pm2 set pm2-logrotate:compress true &>/dev/null || true
+log "Лог-ротация: 10 MB, 7 дней, сжатие"
+
+# --------------------------------------------------------------
+# 14. Сохранение списка процессов pm2
+# --------------------------------------------------------------
 pm2 save &>/dev/null
+log "Список pm2 сохранён"
 
 # --------------------------------------------------------------
-# 10. IP и порт
+# 15. Финальная проверка
 # --------------------------------------------------------------
+sleep 2
+if pm2 pid voidchat-server &>/dev/null; then
+    log "Сервер работает и будет автоматически запущен при перезагрузке VPS"
+else
+    warn "Проверьте статус: pm2 status"
+fi
+
+# Определяем внешний IP
 IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
-PORT="${PORT:-3001}"
 
-log "=============================================="
-log "  Сервер запущен!"
-log ""
-log "  Адрес для подключения:"
-log "  http://$IP:$PORT"
-log ""
-log "  Команды pm2:"
-log "    pm2 status              — статус"
-log "    pm2 logs voidchat-server    — логи"
-log "    pm2 restart voidchat-server — перезапуск"
-log "    pm2 stop voidchat-server    — остановка"
-log ""
-log "  Введите этот адрес в приложении VoidChat"
-log "=============================================="
+# --------------------------------------------------------------
+echo ""
+echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║           DEPLOY COMPLETE ✓                 ║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e " ${GREEN}➜${NC} ${BOLD}Адрес для подключения:${NC}"
+echo -e "   ${BOLD}http://$IP:$PORT${NC}"
+echo ""
+echo -e " ${YELLOW}━━━ Управление сервером ━━━${NC}"
+echo -e "   pm2 status                  статус процессов"
+echo -e "   pm2 logs voidchat-server    логи в реальном времени"
+echo -e "   pm2 restart voidchat-server перезапуск"
+echo -e "   pm2 stop voidchat-server    остановка"
+echo -e "   pm2 monit                   мониторинг (память, CPU)"
+echo ""
+echo -e " ${YELLOW}━━━ Конфигурация ━━━${NC}"
+echo -e "   Режим:            fork (${BOLD}1 процесс / 1 vCPU${NC})"
+echo -e "   Auto-restart:     ✓ (при падении)"
+echo -e "   После reboot:     ✓ (pm2 systemd)"
+echo -e "   Ограничение OOM:  200 MB"
+echo -e "   Crash защита:     задержка 3s, макс. 5 рестартов"
+echo -e "   UFW:              активен (порт $PORT, SSH)"
+echo -e "   Open files:       65536"
+echo -e "   Лог-ротация:      10 MB / 7 дней / сжатие"
+echo ""
+echo -e " ${RED}⚠${NC}  Введите адрес ${BOLD}http://$IP:$PORT${NC} в приложении VoidChat"
+echo ""

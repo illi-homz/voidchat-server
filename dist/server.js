@@ -11,6 +11,7 @@ const io = new Server(PORT, {
 const users = new Map();
 const pendingFriendRequests = new Map();
 const pendingFriendAccepts = new Map();
+const pendingMessages = new Map();
 function cleanupPresence() {
     const now = Date.now();
     const TIMEOUT = 10 * 60 * 1000;
@@ -69,6 +70,19 @@ io.on('connection', (socket) => {
                 });
             }
             pendingFriendAccepts.delete(userId);
+        }
+        // Доставляем накопившиеся офлайн-сообщения
+        const pendingMsgs = pendingMessages.get(userId);
+        if (pendingMsgs) {
+            for (const msg of pendingMsgs) {
+                socket.emit('message', {
+                    from: msg.fromUserId,
+                    ciphertext: msg.ciphertext,
+                    nonce: msg.nonce,
+                    timestamp: msg.timestamp,
+                });
+            }
+            pendingMessages.delete(userId);
         }
     });
     socket.on('heartbeat', () => {
@@ -169,7 +183,11 @@ io.on('connection', (socket) => {
         }
         const target = users.get(to);
         if (!target?.socket) {
-            socket.emit('message_failed', { to, nonce, reason: 'User offline' });
+            // Получатель офлайн — сохраняем в очередь
+            const existing = pendingMessages.get(to) || [];
+            existing.push({ fromUserId: currentUserId, ciphertext, nonce, timestamp: Date.now() });
+            pendingMessages.set(to, existing);
+            socket.emit('message_sent', { to, ciphertext, nonce, timestamp: Date.now() });
             return;
         }
         target.socket.emit('message', {
@@ -179,6 +197,17 @@ io.on('connection', (socket) => {
             timestamp: Date.now(),
         });
         socket.emit('message_sent', { to, ciphertext, nonce, timestamp: Date.now() });
+    });
+    socket.on('messages_read', (data) => {
+        if (!currentUserId) {
+            socket.emit('error', { message: 'Not registered' });
+            return;
+        }
+        // Уведомляем собеседника, что его сообщения прочитаны
+        const target = users.get(data.contactId);
+        if (target?.socket) {
+            target.socket.emit('messages_read', { readBy: currentUserId });
+        }
     });
     socket.on('disconnect', () => {
         if (currentUserId) {
