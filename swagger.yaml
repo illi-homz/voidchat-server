@@ -1,0 +1,327 @@
+openapi: "3.0.3"
+info:
+  title: VoidChat Server
+  description: >
+    Эфемерный E2E зашифрованный chat relay сервер.
+
+
+    Вся коммуникация происходит через Socket.IO WebSocket соединения.
+    Сервер не хранит сообщения и данные между перезапусками.
+  version: 1.0.0
+  contact:
+    name: VoidChat
+  license:
+    name: MIT
+
+servers:
+  - url: wss://localhost:3001
+    description: WebSocket сервер
+
+security: []
+
+paths:
+  /socket.io:
+    get:
+      operationId: connectSocket
+      summary: WebSocket подключение через Socket.IO
+      description: |
+        После установки WebSocket соединения, клиент и сервер обмениваются
+        событиями Socket.IO. Все события описаны в `x-events` и их схемы —
+        в `components/schemas`.
+
+        ## Client → Server (клиент испускает)
+        - `register` — регистрация пользователя
+        - `heartbeat` — поддержание соединения
+        - `get_presence` — проверка присутствия пользователей
+        - `friend_request` — отправка запроса в друзья
+        - `friend_accept` — принятие запроса в друзья
+        - `friend_decline` — отклонение запроса в друзья
+        - `message` — отправка зашифрованного сообщения
+
+        ## Server → Client (сервер испускает)
+        - `registered` — подтверждение регистрации
+        - `error` — ошибка
+        - `kicked` — отключение (дублирующий вход)
+        - `presence` — обновление статуса присутствия (broadcast)
+        - `presence_batch` — результат get_presence
+        - `friend_request` — входящий запрос дружбы
+        - `friend_request_sent` — подтверждение отправки запроса
+        - `friend_accepted` — ваш запрос принят
+        - `friend_confirmed` — дружба подтверждена
+        - `friend_declined` — запрос отклонён
+        - `message` — входящее зашифрованное сообщение
+        - `message_sent` — подтверждение отправки сообщения
+        - `message_failed` — ошибка доставки сообщения
+      responses:
+        "101":
+          description: WebSocket connection upgraded
+        "400":
+          description: Bad request (неверные параметры подключения)
+        "503":
+          description: Server unavailable
+
+x-events:
+  client-to-server:
+    - event: register
+      summary: Регистрация пользователя
+      description: |
+        Обязательно отправить это событие первым после подключения.
+      request:
+        $ref: "#/components/schemas/RegisterRequest"
+    - event: heartbeat
+      summary: Heartbeat
+      description: |
+        Поддержание соединения и сброс 10-минутного таймаута присутствия.
+        Socket.IO ping/pong работает автоматически.
+      request:
+        $ref: "#/components/schemas/EmptyPayload"
+    - event: get_presence
+      summary: Проверить присутствие нескольких пользователей
+      request:
+        $ref: "#/components/schemas/GetPresenceRequest"
+    - event: friend_request
+      summary: Отправить запрос на добавление в друзья
+      description: Получатель должен быть онлайн.
+      request:
+        $ref: "#/components/schemas/FriendRequest"
+    - event: friend_accept
+      summary: Принять запрос дружбы
+      request:
+        $ref: "#/components/schemas/TargetUserRequest"
+    - event: friend_decline
+      summary: Отклонить запрос дружбы
+      request:
+        $ref: "#/components/schemas/TargetUserRequest"
+    - event: message
+      summary: Отправить зашифрованное сообщение
+      description: |
+        Сервер ретранслирует шифротекст, не зная содержимого.
+        Если получатель офлайн, сообщение сохраняется в очереди и
+        доставляется при его следующей регистрации (событие `register`).
+      request:
+        $ref: "#/components/schemas/OutgoingMessage"
+  server-to-client:
+    - event: registered
+      summary: Регистрация подтверждена
+      response:
+        $ref: "#/components/schemas/RegisteredResponse"
+    - event: error
+      summary: Ошибка
+      response:
+        $ref: "#/components/schemas/ErrorMessage"
+    - event: kicked
+      summary: Отключён
+      description: Отключение из-за дублирующего входа.
+      response:
+        $ref: "#/components/schemas/ErrorMessage"
+    - event: presence
+      summary: Обновление присутствия
+      description: broadcast — все онлайн пользователи получают.
+      response:
+        $ref: "#/components/schemas/PresenceUpdate"
+    - event: presence_batch
+      summary: Пакет присутствия
+      description: Ответ на get_presence.
+      response:
+        $ref: "#/components/schemas/PresenceBatch"
+    - event: friend_request
+      summary: Входящий запрос дружбы
+      response:
+        $ref: "#/components/schemas/IncomingFriendRequest"
+    - event: friend_request_sent
+      summary: Запрос дружбы отправлен
+      description: Подтверждение, что запрос дружбы доставлен.
+      response:
+        $ref: "#/components/schemas/TargetUserResponse"
+    - event: friend_accepted
+      summary: Запрос дружбы принят
+      description: Ваш запрос дружбы принят.
+      response:
+        $ref: "#/components/schemas/FriendAcceptedResponse"
+    - event: friend_confirmed
+      summary: Дружба установлена
+      description: Вы приняли запрос — дружба подтверждена.
+      response:
+        $ref: "#/components/schemas/FriendConfirmedResponse"
+    - event: friend_declined
+      summary: Запрос дружбы отклонён
+      response:
+        $ref: "#/components/schemas/UserIdResponse"
+    - event: message
+      summary: Входящее зашифрованное сообщение
+      response:
+        $ref: "#/components/schemas/IncomingMessage"
+    - event: message_sent
+      summary: Сообщение отправлено (подтверждение)
+      response:
+        $ref: "#/components/schemas/MessageSentResponse"
+    - event: message_failed
+      summary: Доставка сообщения не удалась
+      response:
+        $ref: "#/components/schemas/MessageFailedResponse"
+
+components:
+  schemas:
+    EmptyPayload:
+      type: object
+      description: Пустой payload (null)
+      properties: {}
+
+    RegisterRequest:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: Уникальный идентификатор пользователя (UUID)
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        publicKey:
+          type: string
+          nullable: true
+          description: Публичный ключ E2E шифрования
+          example: "base64-public-key"
+
+    GetPresenceRequest:
+      type: object
+      properties:
+        userIds:
+          type: array
+          items:
+            type: string
+          example: ["user-1", "user-2"]
+
+    FriendRequest:
+      type: object
+      properties:
+        targetUserId:
+          type: string
+          description: ID пользователя для запроса дружбы
+          example: "550e8400-e29b-41d4-a716-446655440001"
+
+    TargetUserRequest:
+      type: object
+      properties:
+        targetUserId:
+          type: string
+          description: ID целевого пользователя
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+    OutgoingMessage:
+      type: object
+      required: [to, ciphertext, nonce]
+      properties:
+        to:
+          type: string
+          description: ID получателя
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        ciphertext:
+          type: string
+          description: Зашифрованное сообщение (base64)
+          example: "base64-encrypted-message"
+        nonce:
+          type: string
+          description: Криптографический nonce (base64)
+          example: "base64-nonce"
+
+    RegisteredResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+
+    ErrorMessage:
+      type: object
+      properties:
+        message:
+          type: string
+          example: "User not online"
+
+    PresenceUpdate:
+      type: object
+      properties:
+        userId:
+          type: string
+        online:
+          type: boolean
+
+    PresenceBatch:
+      type: object
+      additionalProperties:
+        type: boolean
+
+    IncomingFriendRequest:
+      type: object
+      properties:
+        fromUserId:
+          type: string
+        fromPublicKey:
+          type: string
+          nullable: true
+
+    TargetUserResponse:
+      type: object
+      properties:
+        targetUserId:
+          type: string
+
+    FriendAcceptedResponse:
+      type: object
+      properties:
+        fromUserId:
+          type: string
+        fromPublicKey:
+          type: string
+          nullable: true
+
+    FriendConfirmedResponse:
+      type: object
+      properties:
+        targetUserId:
+          type: string
+        targetPublicKey:
+          type: string
+          nullable: true
+
+    UserIdResponse:
+      type: object
+      properties:
+        fromUserId:
+          type: string
+
+    IncomingMessage:
+      type: object
+      properties:
+        from:
+          type: string
+          description: ID отправителя
+        ciphertext:
+          type: string
+          description: Зашифрованное сообщение (base64)
+        nonce:
+          type: string
+          description: Криптографический nonce (base64)
+        timestamp:
+          type: integer
+          description: Unix timestamp (ms)
+
+    MessageSentResponse:
+      type: object
+      properties:
+        to:
+          type: string
+        ciphertext:
+          type: string
+        nonce:
+          type: string
+        timestamp:
+          type: integer
+
+    MessageFailedResponse:
+      type: object
+      properties:
+        to:
+          type: string
+        nonce:
+          type: string
+        reason:
+          type: string
+          example: "User offline"

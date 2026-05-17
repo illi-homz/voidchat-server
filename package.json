@@ -1,0 +1,35 @@
+{
+	"name": "voidchat-server",
+	"version": "1.0.0",
+	"description": "Ephemeral E2E encrypted chat relay server",
+	"main": "dist/server.js",
+	"scripts": {
+		"build": "tsc",
+		"start": "node dist/server.js",
+		"dev": "tsx src/server.ts",
+		"lint": "eslint src/",
+		"format": "prettier --write src/"
+	},
+	"keywords": ["chat", "e2e", "encrypted", "relay", "socket.io"],
+	"author": "",
+	"license": "ISC",
+	"type": "module",
+	"dependencies": {
+		"cors": "^2.8.6",
+		"socket.io": "^4.8.3",
+		"uuid": "^14.0.0"
+	},
+	"devDependencies": {
+		"@eslint/js": "^9.0.0",
+		"@types/cors": "^2.8.19",
+		"@types/node": "^25.7.0",
+		"@types/uuid": "^10.0.0",
+		"@typescript-eslint/eslint-plugin": "^8.0.0",
+		"@typescript-eslint/parser": "^8.0.0",
+		"eslint": "^9.0.0",
+		"eslint-plugin-prettier": "^5.0.0",
+		"prettier": "^3.0.0",
+		"tsx": "^4.21.0",
+		"typescript": "^6.0.3"
+	}
+}
