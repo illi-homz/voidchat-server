@@ -11,7 +11,7 @@ set -euo pipefail
 
 REPO_URL="https://github.com/illi-homz/voidchat-server.git"
 NODE_VERSION="22"
-PORT="${PORT:-80}"
+PORT="${PORT:-9001}"
 
 # Определяем HOME принудительно: sudo bash часто оставляет HOME от обычного пользователя,
 # а нам нужно /root, т.к. скрипт работает от root. Иначе pm2 и пути разъезжаются.

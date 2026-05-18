@@ -1,7 +1,7 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Server } from 'socket.io';
 
-const PORT = Number(process.env.PORT) || 80;
+const PORT = Number(process.env.PORT) || 9001;
 const STARTED_AT = Date.now();
 
 interface UserData {
