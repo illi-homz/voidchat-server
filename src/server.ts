@@ -1,6 +1,8 @@
+import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Server } from 'socket.io';
 
 const PORT = Number(process.env.PORT) || 3001;
+const STARTED_AT = Date.now();
 
 interface UserData {
 	socket: import('socket.io').Socket;
@@ -9,7 +11,32 @@ interface UserData {
 	lastSeen: number;
 }
 
-const io = new Server(PORT, {
+// Создаём HTTP-сервер (нужен для health-check и будущих HTTP-ручек)
+const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+	// Health-check: GET / возвращает JSON-статус
+	if (req.url === '/' && req.method === 'GET') {
+		res.writeHead(200, {
+			'Content-Type': 'application/json',
+			'Access-Control-Allow-Origin': '*',
+		});
+		res.end(
+			JSON.stringify({
+				status: 'ok',
+				uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
+				connections: users.size,
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		return;
+	}
+
+	// Все остальные запросы — 404
+	res.writeHead(404, { 'Content-Type': 'text/plain' });
+	res.end('Not found');
+});
+
+// Socket.IO поверх HTTP-сервера
+const io = new Server(httpServer, {
 	cors: {
 		origin: '*',
 		methods: ['GET', 'POST'],
@@ -273,4 +300,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 	});
 });
 
-console.log(`VoidChat server running on port ${PORT}`);
+httpServer.listen(PORT, () => {
+	console.log(`VoidChat server running on http://0.0.0.0:${PORT}`);
+	console.log(`Health check: http://0.0.0.0:${PORT}/`);
+});
