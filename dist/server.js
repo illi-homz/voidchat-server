@@ -1,6 +1,6 @@
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = Number(process.env.PORT) || 80;
 const STARTED_AT = Date.now();
 // Создаём HTTP-сервер (нужен для health-check и будущих HTTP-ручек)
 const httpServer = createServer((req, res) => {
