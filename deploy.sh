@@ -10,9 +10,15 @@ set -euo pipefail
 # ==============================================================
 
 REPO_URL="https://github.com/illi-homz/voidchat-server.git"
-SERVER_DIR="$HOME/voidchat-server"
 NODE_VERSION="22"
 PORT="${PORT:-3001}"
+
+# Определяем HOME принудительно: sudo bash часто оставляет HOME от обычного пользователя,
+# а нам нужно /root, т.к. скрипт работает от root. Иначе pm2 и пути разъезжаются.
+if [ "$EUID" -eq 0 ]; then
+	export HOME="/root"
+fi
+SERVER_DIR="$HOME/voidchat-server"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
