@@ -390,7 +390,7 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'You already have an active call' });
             return;
         }
-        const newCallId = uuidv4();
+        const newCallId = data.callId || uuidv4();
         const session = {
             callId: newCallId,
             callerId: currentUserId,

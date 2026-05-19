@@ -488,7 +488,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
-		const newCallId = uuidv4();
+		const newCallId = data.callId || uuidv4();
 		const session: CallSession = {
 			callId: newCallId,
 			callerId: currentUserId,
