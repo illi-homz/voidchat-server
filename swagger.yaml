@@ -51,6 +51,11 @@ paths:
         - `friend_decline` — отклонение запроса в друзья
         - `message` — отправка зашифрованного сообщения
         - `messages_read` — уведомление о прочтении
+        - `call_offer` — инициация звонка (или renegotiation при ICE restart)
+        - `call_accept` — принятие звонка (или renegotiation answer)
+        - `call_decline` — отклонение звонка
+        - `call_hangup` — завершение звонка
+        - `ice_candidate` — передача ICE кандидата
 
         ## Server → Client (сервер испускает)
         - `registered` — подтверждение регистрации
@@ -67,6 +72,13 @@ paths:
         - `message_sent` — подтверждение отправки сообщения
         - `message_failed` — ошибка доставки сообщения
         - `messages_read` — уведомление о прочтении сообщений собеседником
+        - `call_incoming` — входящий звонок (или ре-офер при ICE restart)
+        - `call_offer_sent` — подтверждение отправки offer
+        - `call_accepted` — звонок принят (или renegotiation answer)
+        - `call_declined` — звонок отклонён
+        - `call_ended` — звонок завершён удалённой стороной
+        - `call_timedout` — таймаут звонка (60 сек без ответа)
+        - `ice_candidate` — ICE кандидат от удалённой стороны
       responses:
         "101":
           description: WebSocket connection upgraded
@@ -122,6 +134,34 @@ x-events:
         Сервер ретранслирует это собеседнику.
       request:
         $ref: "#/components/schemas/MessagesReadRequest"
+    - event: call_offer
+      summary: Инициация звонка
+      description: |
+        Начать звонок или ре-офер для ICE restart.
+        Если пользователь занят — сервер отвечает error("User is busy").
+        Если получатель офлайн — запрос ставится в очередь на 60 секунд.
+      request:
+        $ref: "#/components/schemas/CallOfferRequest"
+    - event: call_accept
+      summary: Принять звонок
+      description: |
+        Принять входящий звонок. Может также использоваться для renegotiation answer.
+      request:
+        $ref: "#/components/schemas/CallAcceptRequest"
+    - event: call_decline
+      summary: Отклонить звонок
+      request:
+        $ref: "#/components/schemas/CallIdRequest"
+    - event: call_hangup
+      summary: Завершить звонок
+      request:
+        $ref: "#/components/schemas/CallIdRequest"
+    - event: ice_candidate
+      summary: Передать ICE кандидат
+      description: |
+        Передача ICE кандидата для WebRTC. Сервер ретранслирует второму участнику.
+      request:
+        $ref: "#/components/schemas/IceCandidateRequest"
   server-to-client:
     - event: registered
       summary: Регистрация подтверждена
@@ -187,6 +227,42 @@ x-events:
         Ваши сообщения были прочитаны собеседником.
       response:
         $ref: "#/components/schemas/MessagesReadResponse"
+    - event: call_incoming
+      summary: Входящий звонок
+      description: |
+        Приходит вызываемому пользователю. Может быть ре-офером при ICE restart
+        (в этом случае callId совпадает с существующим звонком).
+      response:
+        $ref: "#/components/schemas/CallIncomingResponse"
+    - event: call_offer_sent
+      summary: Offer отправлен
+      description: Подтверждение отправки call_offer вызывающему.
+      response:
+        $ref: "#/components/schemas/CallOfferSentResponse"
+    - event: call_accepted
+      summary: Звонок принят
+      description: Приходит вызывающему — собеседник принял звонок.
+      response:
+        $ref: "#/components/schemas/CallAcceptedResponse"
+    - event: call_declined
+      summary: Звонок отклонён
+      description: Приходит вызывающему — собеседник отклонил звонок.
+      response:
+        $ref: "#/components/schemas/CallDeclinedResponse"
+    - event: call_ended
+      summary: Звонок завершён
+      description: Приходит, когда удалённая сторона завершает звонок.
+      response:
+        $ref: "#/components/schemas/CallEndedResponse"
+    - event: call_timedout
+      summary: Таймаут звонка
+      description: Приходит вызывающему, если собеседник не ответил за 60 секунд.
+      response:
+        $ref: "#/components/schemas/CallTimedOutResponse"
+    - event: ice_candidate
+      summary: ICE кандидат от собеседника
+      response:
+        $ref: "#/components/schemas/IceCandidateResponse"
 
 components:
   schemas:
@@ -393,3 +469,124 @@ components:
           type: string
           description: ID пользователя, который прочитал сообщения
           example: "550e8400-e29b-41d4-a716-446655440000"
+
+    # ---- Call schemas ----
+
+    CallOfferRequest:
+      type: object
+      required: [targetUserId, sdp]
+      properties:
+        targetUserId:
+          type: string
+          description: ID вызываемого пользователя
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        sdp:
+          type: string
+          description: SDP offer (JSON-stringified RTCSessionDescription)
+          example: '{"type":"offer","sdp":"v=0\\no=- ..."}'
+        callId:
+          type: string
+          description: ID звонка (опционально — для renegotiation при ICE restart)
+          example: "call_1718000000_a1b2c3d4"
+
+    CallAcceptRequest:
+      type: object
+      required: [callId, sdp]
+      properties:
+        callId:
+          type: string
+          description: ID звонка
+          example: "call_1718000000_a1b2c3d4"
+        sdp:
+          type: string
+          description: SDP answer (JSON-stringified RTCSessionDescription)
+
+    CallIdRequest:
+      type: object
+      required: [callId]
+      properties:
+        callId:
+          type: string
+          description: ID звонка
+          example: "call_1718000000_a1b2c3d4"
+
+    IceCandidateRequest:
+      type: object
+      required: [callId, candidate]
+      properties:
+        callId:
+          type: string
+        candidate:
+          type: string
+          description: JSON-stringified RTCIceCandidate
+          example: '{"candidate":"candidate:1 1 UDP ...","sdpMid":"0","sdpMLineIndex":0}'
+
+    CallIncomingResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        fromUserId:
+          type: string
+          description: ID вызывающего пользователя
+        sdp:
+          type: string
+          description: SDP offer
+
+    CallOfferSentResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        targetUserId:
+          type: string
+
+    CallAcceptedResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        sdp:
+          type: string
+          description: SDP answer
+
+    CallDeclinedResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        reason:
+          type: string
+          example: "declined"
+
+    CallEndedResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        duration:
+          type: integer
+          description: Длительность звонка в секундах
+          example: 125
+        endedBy:
+          type: string
+          description: ID пользователя, завершившего звонок
+
+    CallTimedOutResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        reason:
+          type: string
+          enum: [no_answer, offline]
+          description: Причина таймаута
+
+    IceCandidateResponse:
+      type: object
+      properties:
+        callId:
+          type: string
+        candidate:
+          type: string
+          description: JSON-stringified RTCIceCandidate
