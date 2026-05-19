@@ -56,6 +56,11 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `friend_decline` | `{ targetUserId: string }` | Отклонить запрос дружбы |
 | `message` | `{ to: string, ciphertext: string, nonce: string }` | Отправить зашифрованное сообщение |
 | `messages_read` | `{ from: string, contactId: string }` | Уведомление о прочтении сообщений |
+| `call_offer` | `{ targetUserId, sdp, callId? }` | Инициация звонка или renegotiation (ICE restart) |
+| `call_accept` | `{ callId, sdp }` | Принятие звонка или renegotiation answer |
+| `call_decline` | `{ callId }` | Отклонение звонка |
+| `call_hangup` | `{ callId }` | Завершение звонка |
+| `ice_candidate` | `{ callId, candidate }` | Передача ICE кандидата |
 
 ### Сервер → Клиент
 
@@ -75,6 +80,13 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `message_sent` | `{ to: string, ciphertext: string, nonce: string, timestamp: number }` | Подтверждение доставки сообщения |
 | `message_failed` | `{ to: string, nonce: string, reason: string }` | Доставка сообщения не удалась |
 | `messages_read` | `{ readBy: string }` | Собеседник прочитал сообщения |
+| `call_incoming` | `{ callId, fromUserId, sdp }` | Входящий звонок (или ре-офер при ICE restart) |
+| `call_offer_sent` | `{ callId, targetUserId }` | Подтверждение отправки offer |
+| `call_accepted` | `{ callId, sdp }` | Звонок принят (или renegotiation answer) |
+| `call_declined` | `{ callId, reason }` | Звонок отклонён |
+| `call_ended` | `{ callId, duration, endedBy }` | Звонок завершён удалённой стороной |
+| `call_timedout` | `{ callId, reason }` | Таймаут звонка (60 сек без ответа) |
+| `ice_candidate` | `{ callId, candidate }` | ICE кандидат от удалённой стороны |
 
 ## Система присутствия
 
@@ -83,6 +95,17 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 - Cleanup job запускается каждые 60 секунд для удаления устаревших записей
 - При отключении или таймауте всем клиентам рассылается `presence { userId, online: false }` (через `io.emit`)
 - При регистрации всем клиентам рассылается `presence { userId, online: true }`
+
+## Голосовые звонки
+
+Сервер выступает сигнальным relay для P2P голосовых звонков через WebRTC:
+- SDP offer/answer и ICE кандидаты передаются через Socket.IO события
+- Сервер не инспектирует SDP и ICE — только ретранслирует между участниками
+- Все звонки 1-на-1, только аудио
+- Состояние звонков в памяти: activeCalls, userActiveCall, pendingCallOffers
+- Таймаут непринятого звонка — 60 секунд
+- Rate-limiting на call_offer: 1 вызов/сек на пользователя
+- Graceful shutdown: при остановке сервера все активные звонки корректно завершаются
 
 ## Протокол подключения
 
@@ -127,6 +150,8 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 - Сервер **НЕ** сохраняет данные пользователей между перезапусками
 - В продакшене используй WSS (TLS прокси) для транспортного шифрования
 - E2E шифрование на клиенте (NaCl/libsodium через tweetnacl) — ответственность клиентского приложения
+- Rate-limiting на `call_offer`: не более 1 вызова/сек на пользователя (защита от DoS)
+- Graceful shutdown: при SIGTERM/SIGINT корректно завершаются активные звонки, уведомляются участники, очищаются таймеры
 
 ## Скрипты
 
@@ -160,7 +185,7 @@ voidchat-server/
 ├── uninstall.sh          # Скрипт полного удаления сервера
 ├── README.md
 ├── src/
-│   └── server.ts         # Единственный файл сервера (~306 строк)
+│   └── server.ts         # Единственный файл сервера (~800 строк)
 └── dist/
     ├── server.js
     └── server.d.ts
