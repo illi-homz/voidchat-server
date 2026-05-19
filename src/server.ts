@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { Server } from 'socket.io';
-import { v4 as uuidv4 } from 'uuid';
 
 const PORT = Number(process.env.PORT) || 9001;
 const STARTED_AT = Date.now();
@@ -91,6 +90,7 @@ interface PendingCallOffer {
 const activeCalls = new Map<string, CallSession>();
 const userActiveCall = new Map<string, string>();
 const pendingCallOffers = new Map<string, PendingCallOffer[]>();
+const callOfferRateLimit = new Map<string, number>();
 
 function cleanupCall(callId: string, reason: 'ended' | 'declined' | 'no_answer' | 'offline'): void {
 	const session = activeCalls.get(callId);
@@ -145,8 +145,10 @@ function cleanupPresence(): void {
 				const session = activeCalls.get(activeCallId);
 				if (session) {
 					// Определить второго участника
-					const _otherId = session.callerId === userId ? session.calleeId : session.callerId;
-					const otherSocket = session.callerId === userId ? session.calleeSocket : session.callerSocket;
+					const _otherId =
+						session.callerId === userId ? session.calleeId : session.callerId;
+					const otherSocket =
+						session.callerId === userId ? session.calleeSocket : session.callerSocket;
 
 					// Отправить call_ended второму участнику ДО очистки сессии
 					if (otherSocket) {
@@ -158,8 +160,33 @@ function cleanupPresence(): void {
 							endedBy: userId,
 						});
 					}
+
+					// Очистить таймаут
+					if (session.timeoutHandle) {
+						clearTimeout(session.timeoutHandle);
+						session.timeoutHandle = null;
+					}
+					// Удалить из userActiveCall
+					if (userActiveCall.get(session.callerId) === activeCallId) {
+						userActiveCall.delete(session.callerId);
+					}
+					if (session.calleeId && userActiveCall.get(session.calleeId) === activeCallId) {
+						userActiveCall.delete(session.calleeId);
+					}
+					// Очистить pendingCallOffers
+					if (session.calleeId) {
+						const pending = pendingCallOffers.get(session.calleeId);
+						if (pending) {
+							const filtered = pending.filter(p => p.callId !== activeCallId);
+							if (filtered.length === 0) {
+								pendingCallOffers.delete(session.calleeId);
+							} else {
+								pendingCallOffers.set(session.calleeId, filtered);
+							}
+						}
+					}
+					activeCalls.delete(activeCallId);
 				}
-				cleanupCall(activeCallId, 'no_answer');
 			}
 
 			if (socket) {
@@ -171,7 +198,7 @@ function cleanupPresence(): void {
 	}
 }
 
-setInterval(cleanupPresence, 60000);
+const presenceInterval = setInterval(cleanupPresence, 60000);
 
 io.on('connection', (socket: import('socket.io').Socket) => {
 	let currentUserId: string | null = null;
@@ -411,6 +438,14 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		const now = Date.now();
+		const lastOffer = callOfferRateLimit.get(currentUserId);
+		if (lastOffer && now - lastOffer < 1000) {
+			socket.emit('error', { message: 'Too many requests' });
+			return;
+		}
+		callOfferRateLimit.set(currentUserId, now);
+
 		const { targetUserId, sdp, callId } = data;
 
 		if (!targetUserId || !sdp || targetUserId === currentUserId) {
@@ -444,6 +479,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			};
 			activeCalls.set(callId, session);
 			userActiveCall.set(currentUserId, callId);
+			userActiveCall.set(targetUserId, callId);
 
 			// Таймаут 60 секунд
 			session.timeoutHandle = setTimeout(() => {
@@ -488,7 +524,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
-		const newCallId = data.callId || uuidv4();
+		const newCallId = data.callId || randomUUID();
 		const session: CallSession = {
 			callId: newCallId,
 			callerId: currentUserId,
@@ -504,6 +540,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 
 		activeCalls.set(newCallId, session);
 		userActiveCall.set(currentUserId, newCallId);
+		userActiveCall.set(targetUserId, newCallId);
 
 		if (targetUser.socket) {
 			session.status = 'ringing';
@@ -727,3 +764,39 @@ httpServer.listen(PORT, () => {
 	console.log(`VoidChat server running on http://0.0.0.0:${PORT}`);
 	console.log(`Health check: http://0.0.0.0:${PORT}/`);
 });
+
+function gracefulShutdown(signal: string): void {
+	console.log(`\nReceived ${signal}, shutting down gracefully...`);
+	clearInterval(presenceInterval);
+
+	// Завершить все активные звонки
+	for (const [, session] of activeCalls) {
+		if (session.timeoutHandle) {
+			clearTimeout(session.timeoutHandle);
+		}
+		// Уведомить участников
+		if (session.callerSocket) {
+			session.callerSocket.emit('call_ended', {
+				callId: session.callId,
+				duration: 0,
+				endedBy: 'server',
+			});
+		}
+		if (session.calleeSocket) {
+			session.calleeSocket.emit('call_ended', {
+				callId: session.callId,
+				duration: 0,
+				endedBy: 'server',
+			});
+		}
+	}
+	activeCalls.clear();
+	userActiveCall.clear();
+	pendingCallOffers.clear();
+
+	io.close();
+	httpServer.close(() => process.exit(0));
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
