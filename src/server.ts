@@ -726,5 +726,4 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 httpServer.listen(PORT, () => {
 	console.log(`VoidChat server running on http://0.0.0.0:${PORT}`);
 	console.log(`Health check: http://0.0.0.0:${PORT}/`);
-console.log(`CI/CD auto-deploy: enabled via GitHub Actions`);
 });
