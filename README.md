@@ -16,7 +16,7 @@ npm start
 npm run dev
 ```
 
-Сервер запускается на порту `3001` по умолчанию. Изменить через переменную окружения `PORT`.
+Сервер запускается на порту `9001` по умолчанию. Изменить через переменную окружения `PORT`.
 
 ## Деплой на VPS
 
@@ -26,7 +26,12 @@ npm run dev
 curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy.sh | bash
 ```
 
-Скрипт автоматически установит Node.js, зависимости, соберёт TypeScript, настроит UFW и запустит сервер через pm2.
+Скрипт автоматически установит Node.js, зависимости, соберёт TypeScript, настроит UFW, запустит сервер через pm2, а также:
+
+- Настроит системные лимиты open files (65536) для Socket.IO
+- Настроит лог-ротацию (pm2-logrotate, 10 MB, 7 дней, сжатие)
+- Настроит автозапуск pm2 через systemd (переживёт reboot)
+- Добавит health-check endpoint
 
 ## Архитектура
 
@@ -50,6 +55,7 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `friend_accept` | `{ targetUserId: string }` | Принять запрос дружбы |
 | `friend_decline` | `{ targetUserId: string }` | Отклонить запрос дружбы |
 | `message` | `{ to: string, ciphertext: string, nonce: string }` | Отправить зашифрованное сообщение |
+| `messages_read` | `{ from: string, contactId: string }` | Уведомление о прочтении сообщений |
 
 ### Сервер → Клиент
 
@@ -68,6 +74,7 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `message` | `{ from: string, ciphertext: string, nonce: string, timestamp: number }` | Входящее зашифрованное сообщение |
 | `message_sent` | `{ to: string, ciphertext: string, nonce: string, timestamp: number }` | Подтверждение доставки сообщения |
 | `message_failed` | `{ to: string, nonce: string, reason: string }` | Доставка сообщения не удалась |
+| `messages_read` | `{ readBy: string }` | Собеседник прочитал сообщения |
 
 ## Система присутствия
 
@@ -91,7 +98,22 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
-| `PORT` | `3001` | Порт сервера |
+| `PORT` | `9001` | Порт сервера |
+
+## Health Check
+
+Сервер имеет endpoint `GET /`, возвращающий JSON-статус:
+
+```json
+{
+  "status": "ok",
+  "uptime": 3600,
+  "connections": 5,
+  "timestamp": "2026-05-18T12:00:00.000Z"
+}
+```
+
+Используется скриптом `update.sh` для проверки, что сервер запущен и отвечает.
 
 ## Офлайн-очереди
 
@@ -116,6 +138,14 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `npm run lint` | ESLint проверка |
 | `npm run format` | Prettier форматирование |
 
+### Bash-скрипты
+
+| Скрипт | Описание |
+|--------|----------|
+| `./deploy.sh` | Автоматический деплой на свежий Ubuntu/Debian VPS |
+| `./update.sh` | Обновление сервера из git (pull, build, pm2 restart, health-check) |
+| `./uninstall.sh` | Полное удаление сервера с VPS (pm2, UFW, лимиты, файлы) |
+
 ## Структура проекта
 
 ```
@@ -126,9 +156,11 @@ voidchat-server/
 ├── eslint.config.mjs
 ├── .prettierrc.cjs
 ├── deploy.sh             # Скрипт автоматического деплоя на VPS
+├── update.sh             # Скрипт обновления сервера
+├── uninstall.sh          # Скрипт полного удаления сервера
 ├── README.md
 ├── src/
-│   └── server.ts         # Единственный файл сервера (~280 строк)
+│   └── server.ts         # Единственный файл сервера (~306 строк)
 └── dist/
     ├── server.js
     └── server.d.ts

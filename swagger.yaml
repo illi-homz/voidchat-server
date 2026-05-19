@@ -14,12 +14,25 @@ info:
     name: MIT
 
 servers:
-  - url: wss://localhost:3001
+  - url: wss://localhost:9001
     description: WebSocket сервер
 
 security: []
 
 paths:
+  /:
+    get:
+      operationId: healthCheck
+      summary: Health Check
+      description: |
+        Проверка состояния сервера. Возвращает JSON с метриками.
+      responses:
+        "200":
+          description: Сервер работает
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthCheckResponse"
   /socket.io:
     get:
       operationId: connectSocket
@@ -37,6 +50,7 @@ paths:
         - `friend_accept` — принятие запроса в друзья
         - `friend_decline` — отклонение запроса в друзья
         - `message` — отправка зашифрованного сообщения
+        - `messages_read` — уведомление о прочтении
 
         ## Server → Client (сервер испускает)
         - `registered` — подтверждение регистрации
@@ -52,6 +66,7 @@ paths:
         - `message` — входящее зашифрованное сообщение
         - `message_sent` — подтверждение отправки сообщения
         - `message_failed` — ошибка доставки сообщения
+        - `messages_read` — уведомление о прочтении сообщений собеседником
       responses:
         "101":
           description: WebSocket connection upgraded
@@ -100,6 +115,13 @@ x-events:
         доставляется при его следующей регистрации (событие `register`).
       request:
         $ref: "#/components/schemas/OutgoingMessage"
+    - event: messages_read
+      summary: Уведомление о прочтении сообщений
+      description: |
+        Клиент уведомляет сервер, что сообщения от конкретного контакта прочитаны.
+        Сервер ретранслирует это собеседнику.
+      request:
+        $ref: "#/components/schemas/MessagesReadRequest"
   server-to-client:
     - event: registered
       summary: Регистрация подтверждена
@@ -159,6 +181,12 @@ x-events:
       summary: Доставка сообщения не удалась
       response:
         $ref: "#/components/schemas/MessageFailedResponse"
+    - event: messages_read
+      summary: Сообщения прочитаны
+      description: |
+        Ваши сообщения были прочитаны собеседником.
+      response:
+        $ref: "#/components/schemas/MessagesReadResponse"
 
 components:
   schemas:
@@ -325,3 +353,43 @@ components:
         reason:
           type: string
           example: "User offline"
+
+    HealthCheckResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          example: "ok"
+        uptime:
+          type: integer
+          description: Время работы сервера в секундах
+          example: 3600
+        connections:
+          type: integer
+          description: Количество активных подключений
+          example: 5
+        timestamp:
+          type: string
+          format: date-time
+          description: Время запроса
+          example: "2026-05-18T12:00:00.000Z"
+
+    MessagesReadRequest:
+      type: object
+      properties:
+        from:
+          type: string
+          description: ID текущего пользователя (отправителя уведомления)
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        contactId:
+          type: string
+          description: ID собеседника, чьи сообщения прочитаны
+          example: "550e8400-e29b-41d4-a716-446655440001"
+
+    MessagesReadResponse:
+      type: object
+      properties:
+        readBy:
+          type: string
+          description: ID пользователя, который прочитал сообщения
+          example: "550e8400-e29b-41d4-a716-446655440000"
