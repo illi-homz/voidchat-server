@@ -26,6 +26,27 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 				uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
 				connections: users.size,
 				timestamp: new Date().toISOString(),
+				turn: {
+					urls: ['turn:138.16.224.63:3478'],
+					username: 'voidchat',
+					credential: 'turn_secret_key_change_me',
+				},
+			}),
+		);
+		return;
+	}
+
+	// TURN-конфигурация для WebRTC
+	if (req.url === '/turn-config' && req.method === 'GET') {
+		res.writeHead(200, {
+			'Content-Type': 'application/json',
+			'Access-Control-Allow-Origin': '*',
+		});
+		res.end(
+			JSON.stringify({
+				urls: ['turn:138.16.224.63:3478'],
+				username: 'voidchat',
+				credential: 'turn_secret_key_change_me',
 			}),
 		);
 		return;
