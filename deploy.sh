@@ -191,7 +191,64 @@ fi
 ulimit -n 65536 2>/dev/null || true
 
 # --------------------------------------------------------------
-# 11. Настройка автозапуска pm2 (survive reboot)
+# 11. Установка и настройка TURN сервера (coturn для WebRTC)
+# --------------------------------------------------------------
+if ! command -v turnserver &>/dev/null; then
+    log "Устанавливаем coturn (TURN сервер для WebRTC звонков)..."
+    apt-get install -y coturn &>/dev/null
+    log "coturn установлен"
+fi
+
+TURN_CONFIG="/etc/turnserver.conf"
+if [ ! -f "$TURN_CONFIG" ] || ! grep -q "realm=voidchat" "$TURN_CONFIG" 2>/dev/null; then
+    log "Настраиваем coturn..."
+    cat > "$TURN_CONFIG" <<'TURNEOF'
+listening-port=3478
+fingerprint
+realm=voidchat
+server-name=voidchat
+lt-cred-mech
+user=voidchat:turn_secret_key_change_me
+total-quota=100
+bps-capacity=0
+stale-nonce=600
+no-cli
+no-tlsv1
+no-tlsv1_1
+pidfile="/var/run/turnserver.pid"
+log-file="/var/log/turnserver.log"
+simple-log
+verbose
+mobility
+no-tls
+no-dtls
+TURNEOF
+    
+    # Включаем coturn
+    echo "TURNSERVER_ENABLED=1" > /etc/default/coturn
+    
+    # Настраиваем лог-файл
+    touch /var/log/turnserver.log
+    chown turnserver:turnserver /var/log/turnserver.log 2>/dev/null || true
+    
+    log "coturn настроен"
+fi
+
+# Открываем порты TURN в UFW
+if command -v ufw &>/dev/null; then
+    ufw allow 3478/tcp &>/dev/null || true
+    ufw allow 3478/udp &>/dev/null || true
+    ufw allow 49152:65535/udp &>/dev/null || true
+    log "Порты TURN (3478/TCP+UDP, 49152-65535/UDP) открыты в UFW"
+fi
+
+# Запускаем coturn
+systemctl enable coturn &>/dev/null || true
+systemctl restart coturn &>/dev/null || true
+log "TURN сервер (coturn) запущен"
+
+# --------------------------------------------------------------
+# 12. Настройка автозапуска pm2 (survive reboot)
 # --------------------------------------------------------------
 log "Настраиваем автозапуск pm2 через systemd (переживёт reboot)..."
 pm2 startup systemd -u root --hp /root 2>/dev/null || {
@@ -201,7 +258,7 @@ pm2 startup systemd -u root --hp /root 2>/dev/null || {
 log "pm2 startup настроен"
 
 # --------------------------------------------------------------
-# 12. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
+# 13. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
 # --------------------------------------------------------------
 log "Запускаем сервер через pm2..."
 
@@ -227,7 +284,7 @@ pm2 start dist/server.js \
 log "Сервер запущен (fork, 1 процесс, лимит памяти 200MB)"
 
 # --------------------------------------------------------------
-# 13. Лог-ротация (чтобы логи не съели диск)
+# 14. Лог-ротация (чтобы логи не съели диск)
 # --------------------------------------------------------------
 pm2 install pm2-logrotate &>/dev/null || true
 pm2 set pm2-logrotate:max_size 10M &>/dev/null || true
@@ -236,13 +293,13 @@ pm2 set pm2-logrotate:compress true &>/dev/null || true
 log "Лог-ротация: 10 MB, 7 дней, сжатие"
 
 # --------------------------------------------------------------
-# 14. Сохранение списка процессов pm2
+# 15. Сохранение списка процессов pm2
 # --------------------------------------------------------------
 pm2 save &>/dev/null
 log "Список pm2 сохранён"
 
 # --------------------------------------------------------------
-# 15. Финальная проверка
+# 16. Финальная проверка
 # --------------------------------------------------------------
 sleep 2
 if pm2 pid voidchat-server &>/dev/null; then
