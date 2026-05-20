@@ -106,6 +106,7 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 - Таймаут непринятого звонка — 60 секунд
 - Rate-limiting на call_offer: 1 вызов/сек на пользователя
 - Graceful shutdown: при остановке сервера все активные звонки корректно завершаются
+- TURN сервер (coturn) на порту 3478 для ретрансляции медиа-трафика через NAT.
 
 ## Протокол подключения
 
@@ -190,6 +191,19 @@ voidchat-server/
     ├── server.js
     └── server.d.ts
 ```
+
+## TURN сервер
+
+Для работы голосовых звонков через NAT (мобильный интернет, разные WiFi сети) используется TURN сервер на основе coturn:
+
+- **Порт:** 3478 (TCP/UDP)
+- **Relay порты:** 49152-65535 (UDP)
+- **Credentials:** статические (lt-cred-mech)
+- **Установка:** автоматически через `deploy.sh` (шаг 11)
+- **Обновление конфига:** `/etc/turnserver.conf`
+- **Управление:** `systemctl restart coturn`, `journalctl -u coturn`
+
+> **Важно:** После изменения credentials, обновить их в `/etc/turnserver.conf` и перезапустить coturn. Клиенты получат новые credentials при переподключении к серверу (через `GET /turn-config`).
 
 ## Лицензия
 
