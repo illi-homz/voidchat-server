@@ -5,6 +5,17 @@ import { Server } from 'socket.io';
 const PORT = Number(process.env.PORT) || 9001;
 const STARTED_AT = Date.now();
 
+// TURN-сервер (для WebRTC звонков через NAT)
+const TURN_HOST = process.env.TURN_HOST || '';          // если не задан — TURN не используется
+const TURN_USERNAME = process.env.TURN_USERNAME || '';
+const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || '';
+
+if (TURN_HOST) {
+	console.log(`[TURN] relay at ${TURN_HOST}:3478 (user: ${TURN_USERNAME})`);
+} else {
+	console.log('[TURN] not configured (STUN-only, set TURN_HOST env var for relay across NAT)');
+}
+
 interface UserData {
 	socket: import('socket.io').Socket;
 	userId: string;
@@ -26,11 +37,13 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 				uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
 				connections: users.size,
 				timestamp: new Date().toISOString(),
-				turn: {
-					urls: ['turn:your-server.com:3478'],
-					username: 'voidchat',
-					credential: 'turn_secret_key_change_me',
-				},
+			turn: TURN_HOST
+				? {
+						urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
+						username: TURN_USERNAME,
+						credential: TURN_CREDENTIAL,
+					}
+				: null,
 			}),
 		);
 		return;
@@ -43,11 +56,15 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 			'Access-Control-Allow-Origin': '*',
 		});
 		res.end(
-			JSON.stringify({
-				urls: ['turn:your-server.com:3478'],
-				username: 'voidchat',
-				credential: 'turn_secret_key_change_me',
-			}),
+			JSON.stringify(
+				TURN_HOST
+					? {
+							urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
+							username: TURN_USERNAME,
+							credential: TURN_CREDENTIAL,
+						}
+					: null,
+			),
 		);
 		return;
 	}

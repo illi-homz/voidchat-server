@@ -258,7 +258,13 @@ pm2 startup systemd -u root --hp /root 2>/dev/null || {
 log "pm2 startup настроен"
 
 # --------------------------------------------------------------
-# 13. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
+# 13. Определяем внешний IP для TURN-сервера
+# --------------------------------------------------------------
+TURN_HOST=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+log "Внешний IP: $TURN_HOST"
+
+# --------------------------------------------------------------
+# 14. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
 # --------------------------------------------------------------
 log "Запускаем сервер через pm2..."
 
@@ -270,6 +276,10 @@ mkdir -p ~/voidchat-server/logs
 # fork mode — единственно правильный режим для 1 vCPU:
 #   - Node.js однопоточный, кластеризация на 1 ядре даст только оверхед
 #   - Socket.IO асинхронный — 1 процесс держит тысячи соединений
+# TURN_HOST передаётся как env — сервер отдаёт его в /turn-config для WebRTC
+TURN_HOST="$TURN_HOST" \
+TURN_USERNAME="voidchat" \
+TURN_CREDENTIAL="turn_secret_key_change_me" \
 pm2 start dist/server.js \
     --name voidchat-server \
     --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
@@ -308,8 +318,8 @@ else
     warn "Проверьте статус: pm2 status"
 fi
 
-# Определяем внешний IP
-IP=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+# Внешний IP (определён ранее в шаге 13)
+IP="$TURN_HOST"
 
 # --------------------------------------------------------------
 echo ""
