@@ -36,12 +36,14 @@ echo -e "  • автозапуск pm2 (systemd)"
 echo -e "  • pm2-logrotate модуль"
 echo -e "  • глобальный пакет pm2"
 echo -e "  • правило UFW для порта ${PORT}"
+echo -e "  • TURN секрет (/etc/voidchat-turn-secret)"
 echo -e "  • системные лимиты open files (99-voidchat.conf)"
 echo ""
 echo -e "${YELLOW}НЕ будут удалены:${NC}"
 echo -e "  • Node.js (может использоваться другими проектами)"
 echo -e "  • Git"
 echo -e "  • build-essential"
+echo -e "  • coturn (если используется другими приложениями)"
 echo ""
 
 read -r -p "$(echo -e "${RED}Введите ${BOLD}YES${NC}${RED} для подтверждения удаления:${NC} ")" CONFIRM
@@ -110,9 +112,17 @@ if command -v ufw &>/dev/null; then
 		fi
 	done
 	log "Правило UFW для порта $PORT удалено"
+
+	log "Правило UFW для порта $PORT удалено"
 else
 	warn "UFW не найден, пропускаем"
 fi
+
+# --------------------------------------------------------------
+step "5b/8 — Удаление TURN секрета"
+
+rm -f /etc/voidchat-turn-secret 2>/dev/null || true
+log "TURN секрет удалён"
 
 # --------------------------------------------------------------
 step "6/8 — Удаляем системные лимиты"

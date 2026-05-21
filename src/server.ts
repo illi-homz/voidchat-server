@@ -5,8 +5,14 @@ import { Server } from 'socket.io';
 const PORT = Number(process.env.PORT) || 9001;
 const STARTED_AT = Date.now();
 
+const MAX_CIPHERTEXT_LENGTH = 65536;
+const MAX_NONCE_LENGTH = 128;
+const MAX_SDP_LENGTH = 65536;
+const MAX_USER_ID_LENGTH = 128;
+const MAX_PUBLIC_KEY_LENGTH = 4096;
+
 // TURN-сервер (для WebRTC звонков через NAT)
-const TURN_HOST = process.env.TURN_HOST || '';          // если не задан — TURN не используется
+const TURN_HOST = process.env.TURN_HOST || ''; // если не задан — TURN не используется
 const TURN_USERNAME = process.env.TURN_USERNAME || '';
 const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || '';
 
@@ -35,15 +41,7 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 			JSON.stringify({
 				status: 'ok',
 				uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
-				connections: users.size,
 				timestamp: new Date().toISOString(),
-			turn: TURN_HOST
-				? {
-						urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
-						username: TURN_USERNAME,
-						credential: TURN_CREDENTIAL,
-					}
-				: null,
 			}),
 		);
 		return;
@@ -55,14 +53,17 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 			'Content-Type': 'application/json',
 			'Access-Control-Allow-Origin': '*',
 		});
+		// prettier-ignore
 		res.end(
+			// prettier-ignore
 			JSON.stringify(
 				TURN_HOST
 					? {
-							urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
-							username: TURN_USERNAME,
-							credential: TURN_CREDENTIAL,
-						}
+						// prettier-ignore
+						urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
+						username: TURN_USERNAME,
+						credential: TURN_CREDENTIAL,
+					}
 					: null,
 			),
 		);
@@ -128,7 +129,32 @@ interface PendingCallOffer {
 const activeCalls = new Map<string, CallSession>();
 const userActiveCall = new Map<string, string>();
 const pendingCallOffers = new Map<string, PendingCallOffer[]>();
-const callOfferRateLimit = new Map<string, number>();
+// Глобальный rate-limiter
+const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(
+	userId: string,
+	maxRequests: number = 30,
+	windowMs: number = 1000,
+): boolean {
+	const now = Date.now();
+	const entry = rateLimitMap.get(userId);
+	if (!entry || now > entry.resetAt) {
+		rateLimitMap.set(userId, { count: 1, resetAt: now + windowMs });
+		return true;
+	}
+	if (entry.count >= maxRequests) return false;
+	entry.count++;
+	return true;
+}
+
+// Очистка просроченных записей (раз в 60 секунд)
+setInterval(() => {
+	const now = Date.now();
+	for (const [key, entry] of rateLimitMap) {
+		if (now > entry.resetAt) rateLimitMap.delete(key);
+	}
+}, 60000);
 
 function cleanupCall(callId: string, reason: 'ended' | 'declined' | 'no_answer' | 'offline'): void {
 	const session = activeCalls.get(callId);
@@ -249,6 +275,14 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (
+			userId.length > MAX_USER_ID_LENGTH ||
+			(publicKey && publicKey.length > MAX_PUBLIC_KEY_LENGTH)
+		) {
+			socket.emit('error', { message: 'Invalid registration data' });
+			return;
+		}
+
 		if (users.has(userId)) {
 			const existing = users.get(userId)!;
 			if (existing.socket) {
@@ -354,7 +388,17 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { targetUserId } = data;
+
+		if (typeof targetUserId !== 'string' || targetUserId.length > MAX_USER_ID_LENGTH) {
+			socket.emit('error', { message: 'Invalid target' });
+			return;
+		}
 
 		if (!targetUserId || targetUserId === currentUserId) {
 			socket.emit('error', { message: 'Invalid target' });
@@ -366,6 +410,10 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 
 		if (!target || !target.socket) {
 			const existing = pendingFriendRequests.get(targetUserId) || [];
+			const MAX_PENDING_FRIEND_REQUESTS = 500;
+			if (existing.length >= MAX_PENDING_FRIEND_REQUESTS) {
+				existing.shift();
+			}
 			existing.push({
 				fromUserId: currentUserId,
 				fromPublicKey: requester?.publicKey ?? null,
@@ -388,14 +436,29 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { targetUserId } = data;
-		if (!targetUserId) return;
+		if (
+			!targetUserId ||
+			typeof targetUserId !== 'string' ||
+			targetUserId.length > MAX_USER_ID_LENGTH
+		) {
+			return;
+		}
 
 		const initiator = users.get(targetUserId);
 		const acceptor = users.get(currentUserId);
 
 		if (!initiator || !initiator.socket) {
 			const existing = pendingFriendAccepts.get(targetUserId) || [];
+			const MAX_PENDING_FRIEND_REQUESTS = 500;
+			if (existing.length >= MAX_PENDING_FRIEND_REQUESTS) {
+				existing.shift();
+			}
 			existing.push({
 				fromUserId: currentUserId,
 				fromPublicKey: acceptor?.publicKey ?? null,
@@ -414,10 +477,25 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 	});
 
 	socket.on('friend_decline', (data: { targetUserId: string }) => {
-		if (!currentUserId) return;
+		if (!currentUserId) {
+			socket.emit('error', { message: 'Not registered' });
+			return;
+		}
+
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
 
 		const { targetUserId } = data;
-		if (!targetUserId) return;
+		if (
+			!targetUserId ||
+			typeof targetUserId !== 'string' ||
+			targetUserId.length > MAX_USER_ID_LENGTH
+		) {
+			socket.emit('error', { message: 'Invalid target' });
+			return;
+		}
 
 		const target = users.get(targetUserId);
 		if (target?.socket) {
@@ -431,6 +509,11 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { to, ciphertext, nonce } = data;
 
 		if (!to || !ciphertext || !nonce) {
@@ -438,10 +521,24 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (typeof to !== 'string' || typeof ciphertext !== 'string' || typeof nonce !== 'string') {
+			socket.emit('error', { message: 'Invalid message format' });
+			return;
+		}
+
+		if (ciphertext.length > MAX_CIPHERTEXT_LENGTH || nonce.length > MAX_NONCE_LENGTH) {
+			socket.emit('error', { message: 'Message payload too large' });
+			return;
+		}
+
 		const target = users.get(to);
 		if (!target?.socket) {
 			// Получатель офлайн — сохраняем в очередь
 			const existing = pendingMessages.get(to) || [];
+			const MAX_PENDING_MESSAGES = 1000;
+			if (existing.length >= MAX_PENDING_MESSAGES) {
+				existing.shift();
+			}
 			existing.push({ fromUserId: currentUserId, ciphertext, nonce, timestamp: Date.now() });
 			pendingMessages.set(to, existing);
 			socket.emit('message_sent', { to, ciphertext, nonce, timestamp: Date.now() });
@@ -463,6 +560,12 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			socket.emit('error', { message: 'Not registered' });
 			return;
 		}
+
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		// Уведомляем собеседника, что его сообщения прочитаны
 		const target = users.get(data.contactId);
 		if (target?.socket) {
@@ -476,17 +579,19 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
-		const now = Date.now();
-		const lastOffer = callOfferRateLimit.get(currentUserId);
-		if (lastOffer && now - lastOffer < 1000) {
+		if (!checkRateLimit(currentUserId, 1, 1000)) {
 			socket.emit('error', { message: 'Too many requests' });
 			return;
 		}
-		callOfferRateLimit.set(currentUserId, now);
 
 		const { targetUserId, sdp, callId } = data;
 
 		if (!targetUserId || !sdp || targetUserId === currentUserId) {
+			socket.emit('error', { message: 'Invalid call offer' });
+			return;
+		}
+
+		if (typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
 			socket.emit('error', { message: 'Invalid call offer' });
 			return;
 		}
@@ -618,6 +723,11 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { callId, sdp } = data;
 		if (!callId || !sdp) {
 			socket.emit('error', { message: 'Invalid call accept' });
@@ -672,6 +782,11 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { callId } = data;
 		if (!callId) {
 			socket.emit('error', { message: 'Invalid call decline' });
@@ -696,6 +811,11 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 	socket.on('call_hangup', (data: { callId: string }) => {
 		if (!currentUserId) {
 			socket.emit('error', { message: 'Not registered' });
+			return;
+		}
+
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
 			return;
 		}
 
@@ -741,8 +861,18 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			return;
 		}
 
+		if (!checkRateLimit(currentUserId)) {
+			socket.emit('error', { message: 'Rate limited' });
+			return;
+		}
+
 		const { callId, candidate } = data;
 		if (!callId || !candidate) {
+			socket.emit('error', { message: 'Invalid ICE candidate' });
+			return;
+		}
+
+		if (typeof candidate !== 'string') {
 			socket.emit('error', { message: 'Invalid ICE candidate' });
 			return;
 		}

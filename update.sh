@@ -92,15 +92,49 @@ else
 fi
 
 # --------------------------------------------------------------
+step "6b/8 — Проверка конфигурации TURN (coturn)"
+
+TURN_CONFIG="/etc/turnserver.conf"
+TURN_SECRET_FILE="/etc/voidchat-turn-secret"
+
+if [ -f "$TURN_CONFIG" ]; then
+	# Проверяем, не использует ли coturn старый хардкодный пароль
+	if grep -q "turn_secret_key_change_me" "$TURN_CONFIG" 2>/dev/null; then
+		warn "Обнаружен старый TURN пароль. Генерируем новый..."
+
+		# Генерируем или загружаем новый секрет
+		if [ -f "$TURN_SECRET_FILE" ]; then
+			TURN_SECRET=$(cat "$TURN_SECRET_FILE")
+		else
+			TURN_SECRET=$(openssl rand -hex 32)
+			echo "$TURN_SECRET" > "$TURN_SECRET_FILE"
+			chmod 600 "$TURN_SECRET_FILE"
+		fi
+
+		# Заменяем пароль в конфиге
+		sed -i "s/user=voidchat:.*/user=voidchat:${TURN_SECRET}/" "$TURN_CONFIG"
+		log "TURN пароль обновлён"
+	fi
+
+	systemctl restart coturn 2>/dev/null || true
+	log "coturn перезапущен"
+else
+	warn "TURN конфиг не найден ($TURN_CONFIG)"
+fi
+
+# --------------------------------------------------------------
 step "7/8 — Запускаем сервер через pm2"
 
 # Пробуем restart. Если процесса нет — стартуем новый.
 if pm2 pid voidchat-server &>/dev/null; then
-	pm2 restart voidchat-server &>/dev/null
+	pm2 restart voidchat-server --update-env &>/dev/null
 	log "Сервер перезапущен (pm2 restart)"
 else
 	pm2 delete voidchat-server 2>/dev/null || true
 	mkdir -p ~/voidchat-server/logs
+	TURN_HOST="${TURN_HOST:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}" \
+	TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
+	TURN_CREDENTIAL="${TURN_CREDENTIAL:-$(cat /etc/voidchat-turn-secret 2>/dev/null || echo '')}" \
 	pm2 start dist/server.js \
 		--name voidchat-server \
 		--log-date-format "YYYY-MM-DD HH:mm:ss Z" \
@@ -121,33 +155,31 @@ log "Список pm2 сохранён"
 step "8/8 — Проверка здоровья"
 
 sleep 2
-HEALTH_URL="http://localhost:${PORT}/"
 
-if curl -s --max-time "$HEALTH_TIMEOUT" "$HEALTH_URL" &>/dev/null; then
-	STATUS=$(curl -s --max-time "$HEALTH_TIMEOUT" "$HEALTH_URL")
-	UPTIME=$(echo "$STATUS" | grep -o '"uptime":[0-9]*' | cut -d: -f2)
-	IP=$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
-
-	log "Сервер отвечает на порту $PORT (uptime: ${UPTIME}s)"
-
-	echo ""
-	echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
-	echo -e "${BOLD}║           UPDATE COMPLETE ✓                 ║${NC}"
-	echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
-	echo ""
-	echo -e " ${GREEN}➜${NC} Адрес:       ${BOLD}http://$IP:$PORT${NC}"
-	echo -e " ${GREEN}➜${NC} Локально:    ${BOLD}http://localhost:$PORT${NC}"
-	echo -e " ${GREEN}➜${NC} Health:      ${BOLD}curl http://localhost:$PORT/${NC}"
-	echo ""
-	echo -e " ${YELLOW}━━━ Команды ━━━${NC}"
-	echo -e "   pm2 status                  статус"
-	echo -e "   pm2 logs voidchat-server    логи"
-	echo -e "   ./update.sh                 повторное обновление"
-	echo ""
+if curl -s --max-time "$HEALTH_TIMEOUT" "http://localhost:${PORT}/" &>/dev/null; then
+	HEALTH_URL="http://localhost:${PORT}/"
 else
-	warn "Health-check не прошёл. Проверьте вручную:"
-	warn "  pm2 status"
-	warn "  pm2 logs voidchat-server --lines 20"
-	warn "  curl http://localhost:$PORT/"
+	warn "Health-check не прошёл"
 	exit 1
 fi
+
+STATUS=$(curl -s --max-time "$HEALTH_TIMEOUT" "$HEALTH_URL")
+UPTIME=$(echo "$STATUS" | grep -o '"uptime":[0-9]*' | cut -d: -f2)
+IP=$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+
+log "Сервер отвечает (uptime: ${UPTIME}s)"
+
+echo ""
+echo -e "${BOLD}╔══════════════════════════════════════════════╗${NC}"
+echo -e "${BOLD}║           UPDATE COMPLETE ✓                 ║${NC}"
+echo -e "${BOLD}╚══════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e " ${GREEN}➜${NC} Адрес:       ${BOLD}http://$IP:$PORT${NC}"
+echo -e " ${GREEN}➜${NC} Локально:    ${BOLD}http://localhost:$PORT${NC}"
+echo -e " ${GREEN}➜${NC} Health:      ${BOLD}curl ${HEALTH_URL}${NC}"
+echo ""
+echo -e " ${YELLOW}━━━ Команды ━━━${NC}"
+echo -e "   pm2 status                  статус"
+echo -e "   pm2 logs voidchat-server    логи"
+echo -e "   ./update.sh                 повторное обновление"
+echo ""

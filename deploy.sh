@@ -193,6 +193,19 @@ ulimit -n 65536 2>/dev/null || true
 # --------------------------------------------------------------
 # 11. Установка и настройка TURN сервера (coturn для WebRTC)
 # --------------------------------------------------------------
+
+# Генерируем или загружаем TURN секрет
+TURN_SECRET_FILE="/etc/voidchat-turn-secret"
+if [ -f "$TURN_SECRET_FILE" ]; then
+    TURN_SECRET=$(cat "$TURN_SECRET_FILE")
+    log "TURN секрет загружен из $TURN_SECRET_FILE"
+else
+    TURN_SECRET=$(openssl rand -hex 32)
+    echo "$TURN_SECRET" > "$TURN_SECRET_FILE"
+    chmod 600 "$TURN_SECRET_FILE"
+    log "TURN секрет сгенерирован и сохранён"
+fi
+
 if ! command -v turnserver &>/dev/null; then
     log "Устанавливаем coturn (TURN сервер для WebRTC звонков)..."
     apt-get install -y coturn &>/dev/null
@@ -202,13 +215,13 @@ fi
 TURN_CONFIG="/etc/turnserver.conf"
 if [ ! -f "$TURN_CONFIG" ] || ! grep -q "realm=voidchat" "$TURN_CONFIG" 2>/dev/null; then
     log "Настраиваем coturn..."
-    cat > "$TURN_CONFIG" <<'TURNEOF'
+    cat > "$TURN_CONFIG" <<TURNEOF
 listening-port=3478
 fingerprint
 realm=voidchat
 server-name=voidchat
 lt-cred-mech
-user=voidchat:turn_secret_key_change_me
+user=voidchat:${TURN_SECRET}
 total-quota=100
 bps-capacity=0
 stale-nonce=600
@@ -220,6 +233,8 @@ log-file="/var/log/turnserver.log"
 simple-log
 verbose
 mobility
+min-port=49152
+max-port=65535
 no-tls
 no-dtls
 TURNEOF
@@ -279,7 +294,7 @@ mkdir -p ~/voidchat-server/logs
 # TURN_HOST передаётся как env — сервер отдаёт его в /turn-config для WebRTC
 TURN_HOST="$TURN_HOST" \
 TURN_USERNAME="voidchat" \
-TURN_CREDENTIAL="turn_secret_key_change_me" \
+TURN_CREDENTIAL="$TURN_SECRET" \
 pm2 start dist/server.js \
     --name voidchat-server \
     --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
@@ -338,6 +353,9 @@ fi
 
 echo -e " ${GREEN}➜${NC} ${BOLD}Адрес для подключения:${NC}"
 echo -e "   ${BOLD}$CONNECT_URL${NC}"
+echo ""
+echo -e " ${YELLOW}💡 Для HTTPS настройте домен и DNS A-запись, затем выполните:${NC}"
+echo -e "    DOMAIN=your.domain.com bash deploy.sh"
 echo ""
 echo -e " ${YELLOW}━━━ Управление сервером ━━━${NC}"
 echo -e "   pm2 status                  статус процессов"

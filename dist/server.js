@@ -1,9 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
-import { v4 as uuidv4 } from 'uuid';
 const PORT = Number(process.env.PORT) || 9001;
 const STARTED_AT = Date.now();
+const MAX_CIPHERTEXT_LENGTH = 65536;
+const MAX_NONCE_LENGTH = 128;
+const MAX_SDP_LENGTH = 65536;
+const MAX_USER_ID_LENGTH = 128;
+const MAX_PUBLIC_KEY_LENGTH = 4096;
+// TURN-сервер (для WebRTC звонков через NAT)
+const TURN_HOST = process.env.TURN_HOST || ''; // если не задан — TURN не используется
+const TURN_USERNAME = process.env.TURN_USERNAME || '';
+const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || '';
+if (TURN_HOST) {
+    console.log(`[TURN] relay at ${TURN_HOST}:3478 (user: ${TURN_USERNAME})`);
+}
+else {
+    console.log('[TURN] not configured (STUN-only, set TURN_HOST env var for relay across NAT)');
+}
 // Создаём HTTP-сервер (нужен для health-check и будущих HTTP-ручек)
 const httpServer = createServer((req, res) => {
     // Health-check: GET / возвращает JSON-статус
@@ -15,9 +29,27 @@ const httpServer = createServer((req, res) => {
         res.end(JSON.stringify({
             status: 'ok',
             uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
-            connections: users.size,
             timestamp: new Date().toISOString(),
         }));
+        return;
+    }
+    // TURN-конфигурация для WebRTC
+    if (req.url === '/turn-config' && req.method === 'GET') {
+        res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Access-Control-Allow-Origin': '*',
+        });
+        // prettier-ignore
+        res.end(
+        // prettier-ignore
+        JSON.stringify(TURN_HOST
+            ? {
+                // prettier-ignore
+                urls: [`turn:${TURN_HOST}:3478`, `turn:${TURN_HOST}:3478?transport=tcp`],
+                username: TURN_USERNAME,
+                credential: TURN_CREDENTIAL,
+            }
+            : null));
         return;
     }
     // Все остальные запросы — 404
@@ -40,6 +72,28 @@ const pendingMessages = new Map();
 const activeCalls = new Map();
 const userActiveCall = new Map();
 const pendingCallOffers = new Map();
+// Глобальный rate-limiter
+const rateLimitMap = new Map();
+function checkRateLimit(userId, maxRequests = 30, windowMs = 1000) {
+    const now = Date.now();
+    const entry = rateLimitMap.get(userId);
+    if (!entry || now > entry.resetAt) {
+        rateLimitMap.set(userId, { count: 1, resetAt: now + windowMs });
+        return true;
+    }
+    if (entry.count >= maxRequests)
+        return false;
+    entry.count++;
+    return true;
+}
+// Очистка просроченных записей (раз в 60 секунд)
+setInterval(() => {
+    const now = Date.now();
+    for (const [key, entry] of rateLimitMap) {
+        if (now > entry.resetAt)
+            rateLimitMap.delete(key);
+    }
+}, 60000);
 function cleanupCall(callId, reason) {
     const session = activeCalls.get(callId);
     if (!session)
@@ -99,8 +153,33 @@ function cleanupPresence() {
                             endedBy: userId,
                         });
                     }
+                    // Очистить таймаут
+                    if (session.timeoutHandle) {
+                        clearTimeout(session.timeoutHandle);
+                        session.timeoutHandle = null;
+                    }
+                    // Удалить из userActiveCall
+                    if (userActiveCall.get(session.callerId) === activeCallId) {
+                        userActiveCall.delete(session.callerId);
+                    }
+                    if (session.calleeId && userActiveCall.get(session.calleeId) === activeCallId) {
+                        userActiveCall.delete(session.calleeId);
+                    }
+                    // Очистить pendingCallOffers
+                    if (session.calleeId) {
+                        const pending = pendingCallOffers.get(session.calleeId);
+                        if (pending) {
+                            const filtered = pending.filter(p => p.callId !== activeCallId);
+                            if (filtered.length === 0) {
+                                pendingCallOffers.delete(session.calleeId);
+                            }
+                            else {
+                                pendingCallOffers.set(session.calleeId, filtered);
+                            }
+                        }
+                    }
+                    activeCalls.delete(activeCallId);
                 }
-                cleanupCall(activeCallId, 'no_answer');
             }
             if (socket) {
                 io.emit('presence', { userId, online: false });
@@ -110,13 +189,18 @@ function cleanupPresence() {
         }
     }
 }
-setInterval(cleanupPresence, 60000);
+const presenceInterval = setInterval(cleanupPresence, 60000);
 io.on('connection', (socket) => {
     let currentUserId = null;
     socket.on('register', (data) => {
         const { userId, publicKey } = data;
         if (!userId || typeof userId !== 'string') {
             socket.emit('error', { message: 'Invalid userId' });
+            return;
+        }
+        if (userId.length > MAX_USER_ID_LENGTH ||
+            (publicKey && publicKey.length > MAX_PUBLIC_KEY_LENGTH)) {
+            socket.emit('error', { message: 'Invalid registration data' });
             return;
         }
         if (users.has(userId)) {
@@ -216,7 +300,15 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         const { targetUserId } = data;
+        if (typeof targetUserId !== 'string' || targetUserId.length > MAX_USER_ID_LENGTH) {
+            socket.emit('error', { message: 'Invalid target' });
+            return;
+        }
         if (!targetUserId || targetUserId === currentUserId) {
             socket.emit('error', { message: 'Invalid target' });
             return;
@@ -225,6 +317,10 @@ io.on('connection', (socket) => {
         const requester = users.get(currentUserId);
         if (!target || !target.socket) {
             const existing = pendingFriendRequests.get(targetUserId) || [];
+            const MAX_PENDING_FRIEND_REQUESTS = 500;
+            if (existing.length >= MAX_PENDING_FRIEND_REQUESTS) {
+                existing.shift();
+            }
             existing.push({
                 fromUserId: currentUserId,
                 fromPublicKey: requester?.publicKey ?? null,
@@ -244,13 +340,24 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
-        const { targetUserId } = data;
-        if (!targetUserId)
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
             return;
+        }
+        const { targetUserId } = data;
+        if (!targetUserId ||
+            typeof targetUserId !== 'string' ||
+            targetUserId.length > MAX_USER_ID_LENGTH) {
+            return;
+        }
         const initiator = users.get(targetUserId);
         const acceptor = users.get(currentUserId);
         if (!initiator || !initiator.socket) {
             const existing = pendingFriendAccepts.get(targetUserId) || [];
+            const MAX_PENDING_FRIEND_REQUESTS = 500;
+            if (existing.length >= MAX_PENDING_FRIEND_REQUESTS) {
+                existing.shift();
+            }
             existing.push({
                 fromUserId: currentUserId,
                 fromPublicKey: acceptor?.publicKey ?? null,
@@ -269,11 +376,21 @@ io.on('connection', (socket) => {
         });
     });
     socket.on('friend_decline', (data) => {
-        if (!currentUserId)
+        if (!currentUserId) {
+            socket.emit('error', { message: 'Not registered' });
             return;
+        }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         const { targetUserId } = data;
-        if (!targetUserId)
+        if (!targetUserId ||
+            typeof targetUserId !== 'string' ||
+            targetUserId.length > MAX_USER_ID_LENGTH) {
+            socket.emit('error', { message: 'Invalid target' });
             return;
+        }
         const target = users.get(targetUserId);
         if (target?.socket) {
             target.socket.emit('friend_declined', { fromUserId: currentUserId });
@@ -284,15 +401,31 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         const { to, ciphertext, nonce } = data;
         if (!to || !ciphertext || !nonce) {
             socket.emit('error', { message: 'Invalid message format' });
+            return;
+        }
+        if (typeof to !== 'string' || typeof ciphertext !== 'string' || typeof nonce !== 'string') {
+            socket.emit('error', { message: 'Invalid message format' });
+            return;
+        }
+        if (ciphertext.length > MAX_CIPHERTEXT_LENGTH || nonce.length > MAX_NONCE_LENGTH) {
+            socket.emit('error', { message: 'Message payload too large' });
             return;
         }
         const target = users.get(to);
         if (!target?.socket) {
             // Получатель офлайн — сохраняем в очередь
             const existing = pendingMessages.get(to) || [];
+            const MAX_PENDING_MESSAGES = 1000;
+            if (existing.length >= MAX_PENDING_MESSAGES) {
+                existing.shift();
+            }
             existing.push({ fromUserId: currentUserId, ciphertext, nonce, timestamp: Date.now() });
             pendingMessages.set(to, existing);
             socket.emit('message_sent', { to, ciphertext, nonce, timestamp: Date.now() });
@@ -311,6 +444,10 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         // Уведомляем собеседника, что его сообщения прочитаны
         const target = users.get(data.contactId);
         if (target?.socket) {
@@ -322,8 +459,16 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId, 1, 1000)) {
+            socket.emit('error', { message: 'Too many requests' });
+            return;
+        }
         const { targetUserId, sdp, callId } = data;
         if (!targetUserId || !sdp || targetUserId === currentUserId) {
+            socket.emit('error', { message: 'Invalid call offer' });
+            return;
+        }
+        if (typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
             socket.emit('error', { message: 'Invalid call offer' });
             return;
         }
@@ -352,6 +497,7 @@ io.on('connection', (socket) => {
             };
             activeCalls.set(callId, session);
             userActiveCall.set(currentUserId, callId);
+            userActiveCall.set(targetUserId, callId);
             // Таймаут 60 секунд
             session.timeoutHandle = setTimeout(() => {
                 cleanupCall(callId, 'no_answer');
@@ -390,7 +536,7 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'You already have an active call' });
             return;
         }
-        const newCallId = data.callId || uuidv4();
+        const newCallId = data.callId || randomUUID();
         const session = {
             callId: newCallId,
             callerId: currentUserId,
@@ -405,6 +551,7 @@ io.on('connection', (socket) => {
         };
         activeCalls.set(newCallId, session);
         userActiveCall.set(currentUserId, newCallId);
+        userActiveCall.set(targetUserId, newCallId);
         if (targetUser.socket) {
             session.status = 'ringing';
             session.calleeSocket = targetUser.socket;
@@ -439,6 +586,10 @@ io.on('connection', (socket) => {
     socket.on('call_accept', (data) => {
         if (!currentUserId) {
             socket.emit('error', { message: 'Not registered' });
+            return;
+        }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
             return;
         }
         const { callId, sdp } = data;
@@ -485,6 +636,10 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         const { callId } = data;
         if (!callId) {
             socket.emit('error', { message: 'Invalid call decline' });
@@ -505,6 +660,10 @@ io.on('connection', (socket) => {
     socket.on('call_hangup', (data) => {
         if (!currentUserId) {
             socket.emit('error', { message: 'Not registered' });
+            return;
+        }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
             return;
         }
         const { callId } = data;
@@ -540,8 +699,16 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'Not registered' });
             return;
         }
+        if (!checkRateLimit(currentUserId)) {
+            socket.emit('error', { message: 'Rate limited' });
+            return;
+        }
         const { callId, candidate } = data;
         if (!callId || !candidate) {
+            socket.emit('error', { message: 'Invalid ICE candidate' });
+            return;
+        }
+        if (typeof candidate !== 'string') {
             socket.emit('error', { message: 'Invalid ICE candidate' });
             return;
         }
@@ -590,3 +757,35 @@ httpServer.listen(PORT, () => {
     console.log(`VoidChat server running on http://0.0.0.0:${PORT}`);
     console.log(`Health check: http://0.0.0.0:${PORT}/`);
 });
+function gracefulShutdown(signal) {
+    console.log(`\nReceived ${signal}, shutting down gracefully...`);
+    clearInterval(presenceInterval);
+    // Завершить все активные звонки
+    for (const [, session] of activeCalls) {
+        if (session.timeoutHandle) {
+            clearTimeout(session.timeoutHandle);
+        }
+        // Уведомить участников
+        if (session.callerSocket) {
+            session.callerSocket.emit('call_ended', {
+                callId: session.callId,
+                duration: 0,
+                endedBy: 'server',
+            });
+        }
+        if (session.calleeSocket) {
+            session.calleeSocket.emit('call_ended', {
+                callId: session.callId,
+                duration: 0,
+                endedBy: 'server',
+            });
+        }
+    }
+    activeCalls.clear();
+    userActiveCall.clear();
+    pendingCallOffers.clear();
+    io.close();
+    httpServer.close(() => process.exit(0));
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
