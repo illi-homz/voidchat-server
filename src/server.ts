@@ -27,7 +27,7 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 				connections: users.size,
 				timestamp: new Date().toISOString(),
 				turn: {
-					urls: ['turn:138.16.224.63:3478'],
+					urls: ['turn:your-server.com:3478'],
 					username: 'voidchat',
 					credential: 'turn_secret_key_change_me',
 				},
@@ -44,7 +44,7 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 		});
 		res.end(
 			JSON.stringify({
-				urls: ['turn:138.16.224.63:3478'],
+				urls: ['turn:your-server.com:3478'],
 				username: 'voidchat',
 				credential: 'turn_secret_key_change_me',
 			}),
