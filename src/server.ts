@@ -1102,32 +1102,41 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 		socket.on('disconnect', () => {
 			try {
 				if (currentUserId) {
-					// Если у пользователя был активный звонок — завершить
-					const activeCallId = userActiveCall.get(currentUserId);
-					if (activeCallId) {
-						const session = activeCalls.get(activeCallId);
-						if (session) {
-							const _otherId =
-								session.callerId === currentUserId
-									? session.calleeId
-									: session.callerId;
-							const otherSocket =
-								session.callerId === currentUserId
-									? session.calleeSocket
-									: session.callerSocket;
-							if (otherSocket) {
-								otherSocket.emit('call_ended', {
-									callId: activeCallId,
-									duration: 0,
-									endedBy: currentUserId,
-								});
+					// Удаляем пользователя только если этот сокет всё ещё активен для userId
+					// (защита от race condition при перерегистрации — старый сокет не должен
+					// затирать запись нового сокета в users)
+					const userData = users.get(currentUserId);
+					if (userData && userData.socket.id === socket.id) {
+						// Если у пользователя был активный звонок — завершить
+						const activeCallId = userActiveCall.get(currentUserId);
+						if (activeCallId) {
+							const session = activeCalls.get(activeCallId);
+							if (session) {
+								const _otherId =
+									session.callerId === currentUserId
+										? session.calleeId
+										: session.callerId;
+								const otherSocket =
+									session.callerId === currentUserId
+										? session.calleeSocket
+										: session.callerSocket;
+								if (otherSocket) {
+									otherSocket.emit('call_ended', {
+										callId: activeCallId,
+										duration: 0,
+										endedBy: currentUserId,
+									});
+								}
+								cleanupCall(activeCallId, 'offline');
 							}
-							cleanupCall(activeCallId, 'offline');
 						}
-					}
 
-					users.delete(currentUserId);
-					io.emit('presence', { userId: currentUserId, online: false });
+						users.delete(currentUserId);
+						io.emit('presence', { userId: currentUserId, online: false });
+					}
+					// Если userData отсутствует (уже удалён cleanupPresence) или
+					// userData.socket.id !== socket.id (пользователь перерегистрировался
+					// на новом сокете) — ничего не делаем
 				}
 			} catch (err) {
 				console.error('[disconnect] Error:', err);
