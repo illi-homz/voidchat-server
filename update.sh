@@ -125,25 +125,19 @@ fi
 # --------------------------------------------------------------
 step "7/8 — Запускаем сервер через pm2"
 
-# Пробуем restart. Если процесса нет — стартуем новый.
+# Всегда перезапускаем через delete + start, чтобы TURN_HOST/env гарантированно
+# обновились. pm2 restart --update-env не подхватывает inline export'ы.
 TURN_SECRET_FILE="/etc/voidchat-turn-secret"
 TURN_SECRET=""
 if [ -f "$TURN_SECRET_FILE" ]; then
 	TURN_SECRET=$(cat "$TURN_SECRET_FILE")
 fi
-if pm2 pid voidchat-server &>/dev/null; then
-	TURN_HOST="${TURN_HOST:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}" \
-	TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
-	TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
-	pm2 restart voidchat-server --update-env &>/dev/null
-	log "Сервер перезапущен (pm2 restart)"
-else
-	pm2 delete voidchat-server 2>/dev/null || true
-	mkdir -p ~/voidchat-server/logs
-	TURN_HOST="${TURN_HOST:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}" \
-	TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
-	TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
-	pm2 start dist/server.js \
+pm2 delete voidchat-server 2>/dev/null || true
+mkdir -p ~/voidchat-server/logs
+TURN_HOST="${TURN_HOST:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}" \
+TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
+TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
+pm2 start dist/server.js \
 		--name voidchat-server \
 		--log-date-format "YYYY-MM-DD HH:mm:ss Z" \
 		--max-memory-restart "200M" \
