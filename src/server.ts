@@ -82,7 +82,7 @@ const io = new Server(httpServer, {
 		methods: ['GET', 'POST'],
 	},
 	pingInterval: 25000,
-	pingTimeout: 5000,
+	pingTimeout: 20000,
 });
 
 const users = new Map<string, UserData>();
