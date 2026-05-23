@@ -140,7 +140,7 @@ TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
 pm2 start dist/server.js \
 		--name voidchat-server \
 		--log-date-format "YYYY-MM-DD HH:mm:ss Z" \
-		--max-memory-restart "200M" \
+		--max-memory-restart "500M" \
 		--restart-delay 3000 \
 		--max-restarts 5 \
 		--env NODE_ENV=production \
@@ -148,7 +148,6 @@ pm2 start dist/server.js \
 		--output ~/voidchat-server/logs/out.log \
 		--error ~/voidchat-server/logs/err.log
 	log "Сервер запущен (pm2 start)"
-fi
 
 pm2 save &>/dev/null
 log "Список pm2 сохранён"

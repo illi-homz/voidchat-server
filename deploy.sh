@@ -298,7 +298,7 @@ TURN_CREDENTIAL="$TURN_SECRET" \
 pm2 start dist/server.js \
     --name voidchat-server \
     --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
-    --max-memory-restart "200M" \
+    --max-memory-restart "500M" \
     --restart-delay 3000 \
     --max-restarts 5 \
     --env NODE_ENV=production \
