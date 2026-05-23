@@ -51,6 +51,7 @@ paths:
         - `friend_decline` — отклонение запроса в друзья
         - `message` — отправка зашифрованного сообщения
         - `messages_read` — уведомление о прочтении
+        - `delete_message` — удаление сообщения из очереди офлайн-сообщений
         - `call_offer` — инициация звонка (или renegotiation при ICE restart)
         - `call_accept` — принятие звонка (или renegotiation answer)
         - `call_decline` — отклонение звонка
@@ -134,6 +135,14 @@ x-events:
         Сервер ретранслирует это собеседнику.
       request:
         $ref: "#/components/schemas/MessagesReadRequest"
+    - event: delete_message
+      summary: Удалить сообщение из очереди офлайн-сообщений
+      description: |
+        Отправляется, когда отправитель удаляет одно или несколько непрочитанных
+        сообщений, которые могли быть в очереди pendingMessages получателя.
+        Сервер находит сообщения по nonces и удаляет их, если отправитель совпадает.
+      request:
+        $ref: "#/components/schemas/DeleteMessageRequest"
     - event: call_offer
       summary: Инициация звонка
       description: |
@@ -469,6 +478,22 @@ components:
           type: string
           description: ID пользователя, который прочитал сообщения
           example: "550e8400-e29b-41d4-a716-446655440000"
+
+    DeleteMessageRequest:
+      type: object
+      required: [targetUserId, nonces]
+      properties:
+        targetUserId:
+          type: string
+          description: ID получателя (владелец очереди pendingMessages)
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        nonces:
+          type: array
+          items:
+            type: string
+          description: Массив nonce удаляемых сообщений
+          example: ["base64-nonce-1", "base64-nonce-2"]
+          minItems: 1
 
     # ---- Call schemas ----
 

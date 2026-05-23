@@ -454,6 +454,35 @@ io.on('connection', (socket) => {
             target.socket.emit('messages_read', { readBy: currentUserId });
         }
     });
+    socket.on('delete_message', (data) => {
+        if (!currentUserId) {
+            socket.emit('error', { message: 'Not registered' });
+            return;
+        }
+        const { targetUserId, nonces } = data;
+        if (typeof targetUserId !== 'string' ||
+            !Array.isArray(nonces) ||
+            nonces.some(n => typeof n !== 'string')) {
+            socket.emit('error', { message: 'Invalid delete_message format' });
+            return;
+        }
+        if (nonces.length === 0)
+            return;
+        // Удаляем сообщения из очереди pendingMessages получателя,
+        // только если отправитель (currentUserId) совпадает с fromUserId сообщения
+        const nonceSet = new Set(nonces);
+        const pending = pendingMessages.get(targetUserId);
+        if (pending) {
+            const filtered = pending.filter(msg => !(msg.fromUserId === currentUserId && nonceSet.has(msg.nonce)));
+            if (filtered.length === 0) {
+                pendingMessages.delete(targetUserId);
+            }
+            else {
+                pendingMessages.set(targetUserId, filtered);
+            }
+        }
+        // Fire-and-forget — не шлём подтверждение клиенту
+    });
     socket.on('call_offer', (data) => {
         if (!currentUserId) {
             socket.emit('error', { message: 'Not registered' });
