@@ -16,7 +16,8 @@ cd "$SERVER_DIR"
 
 # Определяем PORT: сперва из переменной окружения, потом из deploy.sh, потом 9001
 if [ -f deploy.sh ]; then
-	DEPLOY_PORT=$(grep '^PORT=' deploy.sh | head -1 | cut -d'"' -f2 || true)
+	# Из строки PORT="${PORT:-9001}" достаём число
+	DEPLOY_PORT=$(grep '^PORT=' deploy.sh | head -1 | sed 's/.*:-\([0-9]*\)}.*/\1/' || true)
 	PORT="${PORT:-${DEPLOY_PORT:-9001}}"
 else
 	PORT="${PORT:-9001}"
