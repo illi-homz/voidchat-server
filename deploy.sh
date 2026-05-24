@@ -59,6 +59,24 @@ log "ОС: $NAME $VERSION_ID ($(uname -m))"
 log "CPU: $(nproc) ядра/ядер, RAM: $(free -m | awk '/Mem:/{print $2}') MB"
 
 # --------------------------------------------------------------
+# 1b. Создание swap для маломощных VPS
+# --------------------------------------------------------------
+TOTAL_RAM=$(free -m | awk '/Mem:/{print $2}')
+if [ "$TOTAL_RAM" -lt 2048 ] && [ -z "$(swapon --show 2>/dev/null)" ]; then
+    log "RAM ${TOTAL_RAM}MB < 2048MB, swap выключен. Создаём swap-файл 1GB..."
+    fallocate -l 1G /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile &>/dev/null
+    swapon /swapfile &>/dev/null
+    if ! grep -q '/swapfile' /etc/fstab 2>/dev/null; then
+        echo '/swapfile none swap sw 0 0' >> /etc/fstab
+    fi
+    log "Swap-файл 1GB создан и активирован"
+else
+    log "Swap не требуется (RAM=${TOTAL_RAM}MB или swap уже активен)"
+fi
+
+# --------------------------------------------------------------
 # 2. Обновление пакетов (тихо, без интерактива)
 # --------------------------------------------------------------
 log "Обновляем системные пакеты..."
@@ -66,6 +84,40 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq &>/dev/null
 apt-get upgrade -y -qq &>/dev/null
 log "Система обновлена"
+
+# --------------------------------------------------------------
+# 2b. Автообновления безопасности (unattended-upgrades)
+# --------------------------------------------------------------
+log "Настраиваем автообновления безопасности..."
+if ! dpkg-query -W -f='${Status}' unattended-upgrades 2>/dev/null | grep -q "ok installed"; then
+    apt-get install -y unattended-upgrades &>/dev/null
+fi
+cat > /etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+systemctl enable unattended-upgrades &>/dev/null || true
+systemctl restart unattended-upgrades &>/dev/null || true
+log "Автообновления безопасности включены"
+
+# --------------------------------------------------------------
+# 2c. Установка и настройка fail2ban
+# --------------------------------------------------------------
+log "Настраиваем fail2ban (защита от брутфорса)..."
+if ! command -v fail2ban-server &>/dev/null; then
+    apt-get install -y fail2ban &>/dev/null
+fi
+cat > /etc/fail2ban/jail.local <<'EOF'
+[sshd]
+enabled = true
+port = ssh
+maxretry = 5
+bantime = 3600
+findtime = 600
+EOF
+systemctl restart fail2ban &>/dev/null || true
+systemctl enable fail2ban &>/dev/null || true
+log "fail2ban установлен и настроен (SSH: 5 попыток → бан 1 час)"
 
 # --------------------------------------------------------------
 # 3. Установка Node.js 22+
@@ -265,23 +317,48 @@ log "TURN сервер (coturn) запущен"
 # --------------------------------------------------------------
 # 12. Настройка автозапуска pm2 (survive reboot)
 # --------------------------------------------------------------
-log "Настраиваем автозапуск pm2 через systemd (переживёт reboot)..."
-pm2 startup systemd -u root --hp /root 2>/dev/null || {
-    # fallback: парсим вывод команды
-    pm2 startup systemd 2>/dev/null | tail -1 | bash 2>/dev/null || true
-}
-log "pm2 startup настроен"
+log "Настраиваем автозапуск pm2 через systemd..."
+pm2 unstartup systemd &>/dev/null || true
+# pm2 startup сам выводит команду для активации systemd
+STARTUP_OUTPUT=$(pm2 startup systemd -u root --hp /root 2>&1)
+# Если команда не выполнилась — пробуем выполнить то что pm2 предлагает
+echo "$STARTUP_OUTPUT" | grep -q "systemctl" && eval "$(echo "$STARTUP_OUTPUT" | tail -1)" 2>/dev/null || true
+systemctl daemon-reload &>/dev/null || true
+systemctl enable pm2-root &>/dev/null || true
+if systemctl is-enabled pm2-root &>/dev/null; then
+    log "pm2 автозапуск через systemd настроен"
+else
+    warn "Не удалось настроить pm2 автозапуск. После перезагрузки запустите: pm2 resurrect"
+fi
 
 # --------------------------------------------------------------
 # 13. Определяем внешний IP для TURN-сервера
 # --------------------------------------------------------------
-TURN_HOST=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
-log "Внешний IP: $TURN_HOST"
+TURN_HOST_FILE="/etc/voidchat-turn-host"
+if [ -n "${DOMAIN:-}" ]; then
+    TURN_HOST="$DOMAIN"
+elif [ -f "$TURN_HOST_FILE" ]; then
+    TURN_HOST=$(cat "$TURN_HOST_FILE")
+    log "TURN_HOST загружен из $TURN_HOST_FILE: $TURN_HOST"
+else
+    TURN_HOST=$(curl -4 -s ifconfig.me 2>/dev/null || curl -4 -s icanhazip.com 2>/dev/null || hostname -I | awk '{print $1}')
+    echo "$TURN_HOST" > "$TURN_HOST_FILE"
+    chmod 644 "$TURN_HOST_FILE"
+    log "TURN_HOST определён и сохранён: $TURN_HOST"
+fi
 
 # --------------------------------------------------------------
 # 14. Запуск сервера через pm2 (fork mode — 1 процесс = 1 ядро)
 # --------------------------------------------------------------
 log "Запускаем сервер через pm2..."
+
+# Проверка, не занят ли порт
+if ss -tlnp "sport = :$PORT" 2>/dev/null | grep -q .; then
+    warn "Порт $PORT уже занят! Сервер может не запуститься."
+    warn "Используйте PORT=другой_порт bash deploy.sh"
+else
+    log "Порт $PORT свободен"
+fi
 
 pm2 delete voidchat-server 2>/dev/null || true
 
@@ -306,7 +383,7 @@ pm2 start dist/server.js \
     --output ~/voidchat-server/logs/out.log \
     --error ~/voidchat-server/logs/err.log
 
-log "Сервер запущен (fork, 1 процесс, лимит памяти 200MB)"
+log "Сервер запущен (fork, 1 процесс, лимит памяти 500M)"
 
 # --------------------------------------------------------------
 # 14. Лог-ротация (чтобы логи не съели диск)
@@ -326,7 +403,19 @@ log "Список pm2 сохранён"
 # --------------------------------------------------------------
 # 16. Финальная проверка
 # --------------------------------------------------------------
-sleep 2
+# Health-check
+sleep 3
+log "Проверка здоровья сервера..."
+HEALTH_URL="http://localhost:${PORT}/"
+HEALTH_RESULT=$(curl -s --max-time 5 "$HEALTH_URL" 2>/dev/null || true)
+if [ -n "$HEALTH_RESULT" ]; then
+    UPTIME=$(echo "$HEALTH_RESULT" | grep -o '"uptime":[0-9]*' | cut -d: -f2)
+    log "Health-check пройден (uptime: ${UPTIME:-?}s)"
+else
+    warn "Health-check не прошёл. Проверьте: pm2 logs voidchat-server --lines 20"
+fi
+
+# Fallback: проверка PID
 if pm2 pid voidchat-server &>/dev/null; then
     log "Сервер работает и будет автоматически запущен при перезагрузке VPS"
 else
@@ -368,7 +457,7 @@ echo -e " ${YELLOW}━━━ Конфигурация ━━━${NC}"
 echo -e "   Режим:            fork (${BOLD}1 процесс / 1 vCPU${NC})"
 echo -e "   Auto-restart:     ✓ (при падении)"
 echo -e "   После reboot:     ✓ (pm2 systemd)"
-echo -e "   Ограничение OOM:  200 MB"
+echo -e "   Ограничение OOM:  500 MB"
 echo -e "   Crash защита:     задержка 3s, макс. 5 рестартов"
 echo -e "   Health-check:     ${BOLD}$CONNECT_URL/${NC}"
 echo -e "   UFW:              активен (порт $PORT_DISPLAY, SSH)"

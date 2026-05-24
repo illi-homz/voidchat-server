@@ -134,7 +134,24 @@ if [ -f "$TURN_SECRET_FILE" ]; then
 fi
 pm2 delete voidchat-server 2>/dev/null || true
 mkdir -p ~/voidchat-server/logs
-TURN_HOST="${TURN_HOST:-$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')}" \
+
+# Определяем TURN_HOST: DOMAIN > /etc/voidchat-turn-host > внешний IP
+TURN_HOST_FILE="/etc/voidchat-turn-host"
+if [ -z "${TURN_HOST:-}" ]; then
+	if [ -n "${DOMAIN:-}" ]; then
+		TURN_HOST="$DOMAIN"
+	elif [ -f "$TURN_HOST_FILE" ]; then
+		TURN_HOST=$(cat "$TURN_HOST_FILE")
+		log "TURN_HOST загружен из $TURN_HOST_FILE: $TURN_HOST"
+	else
+		TURN_HOST=$(curl -4 -s ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
+		echo "$TURN_HOST" > "$TURN_HOST_FILE"
+		chmod 644 "$TURN_HOST_FILE"
+		log "TURN_HOST определён и сохранён: $TURN_HOST"
+	fi
+fi
+
+TURN_HOST="$TURN_HOST" \
 TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
 TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
 pm2 start dist/server.js \
