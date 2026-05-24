@@ -811,11 +811,16 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 						return;
 					}
 
-					// BUG-001: Проверить, не занят ли target пользователь другим звонком
-					if (userActiveCall.has(targetUserId)) {
+				// Проверить, не занят ли target пользователь другим звонком.
+				// Если передан callId и он совпадает с активным звонком target'а —
+				// это renegotiation уже существующего звонка, пропускаем проверку.
+				if (userActiveCall.has(targetUserId)) {
+					const busyCallId = userActiveCall.get(targetUserId);
+					if (!callId || busyCallId !== callId) {
 						socket.emit('error', { message: 'User is busy' });
 						return;
 					}
+				}
 
 					// Проверка на активный звонок
 					const existingCallId = userActiveCall.get(currentUserId);
