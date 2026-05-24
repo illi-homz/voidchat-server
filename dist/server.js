@@ -291,6 +291,7 @@ io.on('connection', (socket) => {
                                 callId: offer.callId,
                                 fromUserId: offer.fromUserId,
                                 sdp: offer.sdp,
+                                mediaType: offer.mediaType,
                             });
                             if (session.timeoutHandle)
                                 clearTimeout(session.timeoutHandle);
@@ -613,7 +614,10 @@ io.on('connection', (socket) => {
                     socket.emit('error', { message: 'Too many requests' });
                     return;
                 }
-                const { targetUserId, sdp, callId } = data;
+                const { targetUserId, sdp, callId, mediaType: rawMediaType } = data;
+                const mediaType = rawMediaType === 'audio' || rawMediaType === 'video'
+                    ? rawMediaType
+                    : 'audio';
                 if (!targetUserId || !sdp || targetUserId === currentUserId) {
                     socket.emit('error', { message: 'Invalid call offer' });
                     return;
@@ -634,6 +638,7 @@ io.on('connection', (socket) => {
                         fromUserId: currentUserId,
                         callId,
                         sdp,
+                        mediaType,
                         timestamp: Date.now(),
                     });
                     pendingCallOffers.set(targetUserId, existing);
@@ -642,6 +647,7 @@ io.on('connection', (socket) => {
                         callId,
                         callerId: currentUserId,
                         calleeId: targetUserId,
+                        mediaType,
                         status: 'pending',
                         sdp,
                         callerSocket: socket,
@@ -658,7 +664,7 @@ io.on('connection', (socket) => {
                         cleanupCall(callId, 'no_answer');
                     }, 60000);
                     // Подтверждение отправителю
-                    socket.emit('call_offer_sent', { callId, targetUserId });
+                    socket.emit('call_offer_sent', { callId, targetUserId, mediaType });
                     return;
                 }
                 // BUG-001: Проверить, не занят ли target пользователь другим звонком
@@ -683,6 +689,7 @@ io.on('connection', (socket) => {
                                     callId,
                                     fromUserId: currentUserId,
                                     sdp,
+                                    mediaType: existingSession.mediaType,
                                 });
                             }
                             return;
@@ -696,6 +703,7 @@ io.on('connection', (socket) => {
                     callId: newCallId,
                     callerId: currentUserId,
                     calleeId: targetUserId,
+                    mediaType,
                     status: 'pending',
                     sdp,
                     callerSocket: socket,
@@ -714,6 +722,7 @@ io.on('connection', (socket) => {
                         callId: newCallId,
                         fromUserId: currentUserId,
                         sdp,
+                        mediaType,
                     });
                     session.timeoutHandle = setTimeout(() => {
                         if (session.status === 'ringing' || session.status === 'pending') {
@@ -727,6 +736,7 @@ io.on('connection', (socket) => {
                         fromUserId: currentUserId,
                         callId: newCallId,
                         sdp,
+                        mediaType,
                         timestamp: Date.now(),
                     });
                     pendingCallOffers.set(targetUserId, existing);
@@ -736,7 +746,7 @@ io.on('connection', (socket) => {
                         }
                     }, 60000);
                 }
-                socket.emit('call_offer_sent', { callId: newCallId, targetUserId });
+                socket.emit('call_offer_sent', { callId: newCallId, targetUserId, mediaType });
             }
             catch (err) {
                 console.error('[call_offer] Error:', err);
@@ -932,29 +942,38 @@ io.on('connection', (socket) => {
         socket.on('disconnect', () => {
             try {
                 if (currentUserId) {
-                    // Если у пользователя был активный звонок — завершить
-                    const activeCallId = userActiveCall.get(currentUserId);
-                    if (activeCallId) {
-                        const session = activeCalls.get(activeCallId);
-                        if (session) {
-                            const _otherId = session.callerId === currentUserId
-                                ? session.calleeId
-                                : session.callerId;
-                            const otherSocket = session.callerId === currentUserId
-                                ? session.calleeSocket
-                                : session.callerSocket;
-                            if (otherSocket) {
-                                otherSocket.emit('call_ended', {
-                                    callId: activeCallId,
-                                    duration: 0,
-                                    endedBy: currentUserId,
-                                });
+                    // Удаляем пользователя только если этот сокет всё ещё активен для userId
+                    // (защита от race condition при перерегистрации — старый сокет не должен
+                    // затирать запись нового сокета в users)
+                    const userData = users.get(currentUserId);
+                    if (userData && userData.socket.id === socket.id) {
+                        // Если у пользователя был активный звонок — завершить
+                        const activeCallId = userActiveCall.get(currentUserId);
+                        if (activeCallId) {
+                            const session = activeCalls.get(activeCallId);
+                            if (session) {
+                                const _otherId = session.callerId === currentUserId
+                                    ? session.calleeId
+                                    : session.callerId;
+                                const otherSocket = session.callerId === currentUserId
+                                    ? session.calleeSocket
+                                    : session.callerSocket;
+                                if (otherSocket) {
+                                    otherSocket.emit('call_ended', {
+                                        callId: activeCallId,
+                                        duration: 0,
+                                        endedBy: currentUserId,
+                                    });
+                                }
+                                cleanupCall(activeCallId, 'offline');
                             }
-                            cleanupCall(activeCallId, 'offline');
                         }
+                        users.delete(currentUserId);
+                        io.emit('presence', { userId: currentUserId, online: false });
                     }
-                    users.delete(currentUserId);
-                    io.emit('presence', { userId: currentUserId, online: false });
+                    // Если userData отсутствует (уже удалён cleanupPresence) или
+                    // userData.socket.id !== socket.id (пользователь перерегистрировался
+                    // на новом сокете) — ничего не делаем
                 }
             }
             catch (err) {

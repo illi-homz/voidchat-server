@@ -106,10 +106,13 @@ const pendingMessages = new Map<
 	}>
 >();
 
+type MediaType = 'audio' | 'video';
+
 interface CallSession {
 	callId: string;
 	callerId: string;
 	calleeId: string;
+	mediaType: MediaType;
 	status: 'pending' | 'ringing' | 'connected' | 'ended';
 	sdp: string | null;
 	callerSocket: import('socket.io').Socket;
@@ -123,6 +126,7 @@ interface PendingCallOffer {
 	fromUserId: string;
 	callId: string;
 	sdp: string;
+	mediaType: MediaType;
 	timestamp: number;
 }
 
@@ -383,6 +387,7 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 								callId: offer.callId,
 								fromUserId: offer.fromUserId,
 								sdp: offer.sdp,
+								mediaType: offer.mediaType,
 							});
 							if (session.timeoutHandle) clearTimeout(session.timeoutHandle);
 							session.timeoutHandle = setTimeout(() => {
@@ -720,57 +725,132 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			}
 		});
 
-		socket.on('call_offer', (data: { targetUserId: string; sdp: string; callId?: string }) => {
-			try {
-				if (!currentUserId) {
-					socket.emit('error', { message: 'Not registered' });
-					return;
-				}
+		socket.on(
+			'call_offer',
+			(data: {
+				targetUserId: string;
+				sdp: string;
+				callId?: string;
+				mediaType?: MediaType;
+			}) => {
+				try {
+					if (!currentUserId) {
+						socket.emit('error', { message: 'Not registered' });
+						return;
+					}
 
-				const _userData_co = users.get(currentUserId);
-				if (_userData_co) _userData_co.lastSeen = Date.now();
+					const _userData_co = users.get(currentUserId);
+					if (_userData_co) _userData_co.lastSeen = Date.now();
 
-				// Skip rate-limit for renegotiation (existing call)
-				if (data.callId && activeCalls.has(data.callId)) {
-					// This is a re-offer, skip rate limit
-				} else if (!checkRateLimit(currentUserId, 1, 1000)) {
-					socket.emit('error', { message: 'Too many requests' });
-					return;
-				}
+					// Skip rate-limit for renegotiation (existing call)
+					if (data.callId && activeCalls.has(data.callId)) {
+						// This is a re-offer, skip rate limit
+					} else if (!checkRateLimit(currentUserId, 1, 1000)) {
+						socket.emit('error', { message: 'Too many requests' });
+						return;
+					}
 
-				const { targetUserId, sdp, callId } = data;
+					const { targetUserId, sdp, callId, mediaType: rawMediaType } = data;
+					const mediaType: MediaType =
+						rawMediaType === 'audio' || rawMediaType === 'video'
+							? rawMediaType
+							: 'audio';
 
-				if (!targetUserId || !sdp || targetUserId === currentUserId) {
-					socket.emit('error', { message: 'Invalid call offer' });
-					return;
-				}
+					if (!targetUserId || !sdp || targetUserId === currentUserId) {
+						socket.emit('error', { message: 'Invalid call offer' });
+						return;
+					}
 
-				if (typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
-					socket.emit('error', { message: 'Invalid call offer' });
-					return;
-				}
+					if (typeof sdp !== 'string' || sdp.length > MAX_SDP_LENGTH) {
+						socket.emit('error', { message: 'Invalid call offer' });
+						return;
+					}
 
-				const targetUser = users.get(targetUserId);
-				// Если targetUser не найден — обработать как офлайн (поставить в очередь)
-				if (!targetUser) {
-					const callId = data.callId || randomUUID();
+					const targetUser = users.get(targetUserId);
+					// Если targetUser не найден — обработать как офлайн (поставить в очередь)
+					if (!targetUser) {
+						const callId = data.callId || randomUUID();
 
-					// Положить в офлайн-очередь
-					const existing = pendingCallOffers.get(targetUserId) || [];
-					if (existing.length >= 10) existing.shift(); // ограничение 10 офлайн-звонков
-					existing.push({
-						fromUserId: currentUserId,
-						callId,
-						sdp,
-						timestamp: Date.now(),
-					});
-					pendingCallOffers.set(targetUserId, existing);
+						// Положить в офлайн-очередь
+						const existing = pendingCallOffers.get(targetUserId) || [];
+						if (existing.length >= 10) existing.shift(); // ограничение 10 офлайн-звонков
+						existing.push({
+							fromUserId: currentUserId,
+							callId,
+							sdp,
+							mediaType,
+							timestamp: Date.now(),
+						});
+						pendingCallOffers.set(targetUserId, existing);
 
-					// Создать сессию
+						// Создать сессию
+						const session: CallSession = {
+							callId,
+							callerId: currentUserId,
+							calleeId: targetUserId,
+							mediaType,
+							status: 'pending',
+							sdp,
+							callerSocket: socket,
+							calleeSocket: null,
+							timeoutHandle: null,
+							startedAt: Date.now(),
+							connectedAt: null,
+						};
+						activeCalls.set(callId, session);
+						userActiveCall.set(currentUserId, callId);
+						userActiveCall.set(targetUserId, callId);
+
+						// Таймаут 60 секунд
+						session.timeoutHandle = setTimeout(() => {
+							cleanupCall(callId, 'no_answer');
+						}, 60000);
+
+						// Подтверждение отправителю
+						socket.emit('call_offer_sent', { callId, targetUserId, mediaType });
+						return;
+					}
+
+					// BUG-001: Проверить, не занят ли target пользователь другим звонком
+					if (userActiveCall.has(targetUserId)) {
+						socket.emit('error', { message: 'User is busy' });
+						return;
+					}
+
+					// Проверка на активный звонок
+					const existingCallId = userActiveCall.get(currentUserId);
+					if (existingCallId) {
+						// Если callId передан и совпадает с существующим звонком — это renegotiation
+						if (callId && existingCallId === callId) {
+							const existingSession = activeCalls.get(existingCallId);
+							if (existingSession) {
+								existingSession.sdp = sdp;
+								// Определяем сокет другой стороны
+								const otherSocket =
+									existingSession.callerId === currentUserId
+										? existingSession.calleeSocket
+										: existingSession.callerSocket;
+								if (otherSocket) {
+									otherSocket.emit('call_incoming', {
+										callId,
+										fromUserId: currentUserId,
+										sdp,
+										mediaType: existingSession.mediaType,
+									});
+								}
+								return;
+							}
+						}
+						socket.emit('error', { message: 'You already have an active call' });
+						return;
+					}
+
+					const newCallId = data.callId || randomUUID();
 					const session: CallSession = {
-						callId,
+						callId: newCallId,
 						callerId: currentUserId,
 						calleeId: targetUserId,
+						mediaType,
 						status: 'pending',
 						sdp,
 						callerSocket: socket,
@@ -779,106 +859,49 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 						startedAt: Date.now(),
 						connectedAt: null,
 					};
-					activeCalls.set(callId, session);
-					userActiveCall.set(currentUserId, callId);
-					userActiveCall.set(targetUserId, callId);
 
-					// Таймаут 60 секунд
-					session.timeoutHandle = setTimeout(() => {
-						cleanupCall(callId, 'no_answer');
-					}, 60000);
+					activeCalls.set(newCallId, session);
+					userActiveCall.set(currentUserId, newCallId);
+					userActiveCall.set(targetUserId, newCallId);
 
-					// Подтверждение отправителю
-					socket.emit('call_offer_sent', { callId, targetUserId });
-					return;
-				}
-
-				// BUG-001: Проверить, не занят ли target пользователь другим звонком
-				if (userActiveCall.has(targetUserId)) {
-					socket.emit('error', { message: 'User is busy' });
-					return;
-				}
-
-				// Проверка на активный звонок
-				const existingCallId = userActiveCall.get(currentUserId);
-				if (existingCallId) {
-					// Если callId передан и совпадает с существующим звонком — это renegotiation
-					if (callId && existingCallId === callId) {
-						const existingSession = activeCalls.get(existingCallId);
-						if (existingSession) {
-							existingSession.sdp = sdp;
-							// Определяем сокет другой стороны
-							const otherSocket =
-								existingSession.callerId === currentUserId
-									? existingSession.calleeSocket
-									: existingSession.callerSocket;
-							if (otherSocket) {
-								otherSocket.emit('call_incoming', {
-									callId,
-									fromUserId: currentUserId,
-									sdp,
-								});
+					if (targetUser.socket) {
+						session.status = 'ringing';
+						session.calleeSocket = targetUser.socket;
+						targetUser.socket.emit('call_incoming', {
+							callId: newCallId,
+							fromUserId: currentUserId,
+							sdp,
+							mediaType,
+						});
+						session.timeoutHandle = setTimeout(() => {
+							if (session.status === 'ringing' || session.status === 'pending') {
+								cleanupCall(newCallId, 'no_answer');
 							}
-							return;
-						}
+						}, 60000);
+					} else {
+						const existing = pendingCallOffers.get(targetUserId) || [];
+						existing.push({
+							fromUserId: currentUserId,
+							callId: newCallId,
+							sdp,
+							mediaType,
+							timestamp: Date.now(),
+						});
+						pendingCallOffers.set(targetUserId, existing);
+						session.timeoutHandle = setTimeout(() => {
+							if (session.status === 'ringing' || session.status === 'pending') {
+								cleanupCall(newCallId, 'no_answer');
+							}
+						}, 60000);
 					}
-					socket.emit('error', { message: 'You already have an active call' });
-					return;
+
+					socket.emit('call_offer_sent', { callId: newCallId, targetUserId, mediaType });
+				} catch (err) {
+					console.error('[call_offer] Error:', err);
+					socket.emit('error', { message: 'Internal error' });
 				}
-
-				const newCallId = data.callId || randomUUID();
-				const session: CallSession = {
-					callId: newCallId,
-					callerId: currentUserId,
-					calleeId: targetUserId,
-					status: 'pending',
-					sdp,
-					callerSocket: socket,
-					calleeSocket: null,
-					timeoutHandle: null,
-					startedAt: Date.now(),
-					connectedAt: null,
-				};
-
-				activeCalls.set(newCallId, session);
-				userActiveCall.set(currentUserId, newCallId);
-				userActiveCall.set(targetUserId, newCallId);
-
-				if (targetUser.socket) {
-					session.status = 'ringing';
-					session.calleeSocket = targetUser.socket;
-					targetUser.socket.emit('call_incoming', {
-						callId: newCallId,
-						fromUserId: currentUserId,
-						sdp,
-					});
-					session.timeoutHandle = setTimeout(() => {
-						if (session.status === 'ringing' || session.status === 'pending') {
-							cleanupCall(newCallId, 'no_answer');
-						}
-					}, 60000);
-				} else {
-					const existing = pendingCallOffers.get(targetUserId) || [];
-					existing.push({
-						fromUserId: currentUserId,
-						callId: newCallId,
-						sdp,
-						timestamp: Date.now(),
-					});
-					pendingCallOffers.set(targetUserId, existing);
-					session.timeoutHandle = setTimeout(() => {
-						if (session.status === 'ringing' || session.status === 'pending') {
-							cleanupCall(newCallId, 'no_answer');
-						}
-					}, 60000);
-				}
-
-				socket.emit('call_offer_sent', { callId: newCallId, targetUserId });
-			} catch (err) {
-				console.error('[call_offer] Error:', err);
-				socket.emit('error', { message: 'Internal error' });
-			}
-		});
+			},
+		);
 
 		socket.on('call_accept', (data: { callId: string; sdp: string }) => {
 			try {

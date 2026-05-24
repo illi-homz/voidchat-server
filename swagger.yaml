@@ -497,6 +497,11 @@ components:
 
     # ---- Call schemas ----
 
+    MediaType:
+      type: string
+      enum: [audio, video]
+      description: Тип звонка (audio — голосовой, video — видеозвонок)
+
     CallOfferRequest:
       type: object
       required: [targetUserId, sdp]
@@ -513,6 +518,9 @@ components:
           type: string
           description: ID звонка (опционально — для renegotiation при ICE restart)
           example: "call_1718000000_a1b2c3d4"
+        mediaType:
+          $ref: "#/components/schemas/MediaType"
+          description: Тип звонка (опционально, по умолчанию 'audio' для обратной совместимости)
 
     CallAcceptRequest:
       type: object
@@ -557,6 +565,9 @@ components:
         sdp:
           type: string
           description: SDP offer
+        mediaType:
+          $ref: "#/components/schemas/MediaType"
+          description: Тип звонка
 
     CallOfferSentResponse:
       type: object
@@ -565,6 +576,9 @@ components:
           type: string
         targetUserId:
           type: string
+        mediaType:
+          $ref: "#/components/schemas/MediaType"
+          description: Тип звонка
 
     CallAcceptedResponse:
       type: object
