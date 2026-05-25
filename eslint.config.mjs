@@ -13,6 +13,8 @@ export default [
 				setTimeout: 'readonly',
 				clearInterval: 'readonly',
 			clearTimeout: 'readonly',
+				setImmediate: 'readonly',
+				clearImmediate: 'readonly',
 				process: 'readonly',
 				Date: 'readonly',
 				Math: 'readonly',
