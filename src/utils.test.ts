@@ -3,7 +3,7 @@
  *
  * NOTE: Requires checkRateLimit, cleanupCall, cleanupPresence and their shared
  * state Maps (activeCalls, userActiveCall, pendingCallOffers, users, rateLimitMap)
- * to be exported from server.ts.
+ * to be exported from utils.ts.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -42,7 +42,7 @@ vi.mock('socket.io', () => {
 // ---------------------------------------------------------------------------
 // Imports — after mocks are registered so that server.ts uses the fakes
 // ---------------------------------------------------------------------------
-import { checkRateLimit, cleanupCall, cleanupPresence } from './server.js';
+import { checkRateLimit, cleanupCall, cleanupPresence } from './utils.js';
 import { activeCalls, userActiveCall, pendingCallOffers, users, rateLimitMap } from './state.js';
 
 // ---------------------------------------------------------------------------
