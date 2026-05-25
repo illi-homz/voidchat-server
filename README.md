@@ -61,6 +61,7 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `call_decline` | `{ callId }` | Отклонение звонка |
 | `call_hangup` | `{ callId }` | Завершение звонка |
 | `ice_candidate` | `{ callId, candidate }` | Передача ICE кандидата |
+| `claim_invite` | `{ inviterUserId }` | Подтверждение приглашения на сервер |
 
 ### Сервер → Клиент
 
@@ -87,6 +88,8 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | `call_ended` | `{ callId, duration, endedBy }` | Звонок завершён удалённой стороной |
 | `call_timedout` | `{ callId, reason }` | Таймаут звонка (60 сек без ответа) |
 | `ice_candidate` | `{ callId, candidate }` | ICE кандидат от удалённой стороны |
+| `auto_friend_added` | `{ userId, publicKey }` | Автоматическое добавление в друзья (по приглашению) |
+| `invite_claimed` | `{ inviterUserId, publicKey }` | Подтверждение, что приглашение обработано |
 
 ## Система присутствия
 

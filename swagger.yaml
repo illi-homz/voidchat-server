@@ -57,6 +57,7 @@ paths:
         - `call_decline` — отклонение звонка
         - `call_hangup` — завершение звонка
         - `ice_candidate` — передача ICE кандидата
+        - `claim_invite` — подтверждение приглашения на сервер (мгновенная дружба)
 
         ## Server → Client (сервер испускает)
         - `registered` — подтверждение регистрации
@@ -80,6 +81,8 @@ paths:
         - `call_ended` — звонок завершён удалённой стороной
         - `call_timedout` — таймаут звонка (60 сек без ответа)
         - `ice_candidate` — ICE кандидат от удалённой стороны
+        - `auto_friend_added` — автоматическое добавление в друзья (по приглашению)
+        - `invite_claimed` — подтверждение, что приглашение обработано
       responses:
         "101":
           description: WebSocket connection upgraded
@@ -171,6 +174,13 @@ x-events:
         Передача ICE кандидата для WebRTC. Сервер ретранслирует второму участнику.
       request:
         $ref: "#/components/schemas/IceCandidateRequest"
+    - event: claim_invite
+      summary: Подтвердить приглашение на сервер
+      description: |
+        Отправляется после добавления сервера по приглашению (QR-код).
+        Сервер автоматически знакомит пользователей (без подтверждения).
+      request:
+        $ref: "#/components/schemas/ClaimInviteRequest"
   server-to-client:
     - event: registered
       summary: Регистрация подтверждена
@@ -272,6 +282,22 @@ x-events:
       summary: ICE кандидат от собеседника
       response:
         $ref: "#/components/schemas/IceCandidateResponse"
+    - event: auto_friend_added
+      summary: Автоматическое добавление в друзья (по приглашению)
+      description: |
+        Получает приглашающий пользователь, когда новый пользователь
+        добавляет сервер через QR-код приглашения. Контакт создаётся
+        автоматически, без подтверждения.
+      response:
+        $ref: "#/components/schemas/AutoFriendAddedResponse"
+    - event: invite_claimed
+      summary: Приглашение обработано
+      description: |
+        Подтверждение отправителю claim_invite. Содержит publicKey
+        приглашающего (null если он офлайн — ключ будет получен
+        через friend_accepted после friend_accept).
+      response:
+        $ref: "#/components/schemas/InviteClaimedResponse"
 
 components:
   schemas:
@@ -629,3 +655,36 @@ components:
         candidate:
           type: string
           description: JSON-stringified RTCIceCandidate
+
+    ClaimInviteRequest:
+      type: object
+      required: [inviterUserId]
+      properties:
+        inviterUserId:
+          type: string
+          description: ID пользователя, который пригласил на сервер
+          example: "550e8400-e29b-41d4-a716-446655440000"
+
+    AutoFriendAddedResponse:
+      type: object
+      properties:
+        userId:
+          type: string
+          description: ID нового пользователя, присоединившегося по приглашению
+          example: "550e8400-e29b-41d4-a716-446655440001"
+        publicKey:
+          type: string
+          nullable: true
+          description: Публичный ключ нового пользователя (null если не указан)
+
+    InviteClaimedResponse:
+      type: object
+      properties:
+        inviterUserId:
+          type: string
+          description: ID пользователя, который пригласил
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        publicKey:
+          type: string
+          nullable: true
+          description: Публичный ключ приглашающего (null если офлайн)

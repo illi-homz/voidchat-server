@@ -133,6 +133,8 @@ interface PendingCallOffer {
 const activeCalls = new Map<string, CallSession>();
 const userActiveCall = new Map<string, string>();
 const pendingCallOffers = new Map<string, PendingCallOffer[]>();
+const MAX_PENDING_AUTO_FRIENDS = 500;
+const pendingAutoFriends = new Map<string, Array<{ userId: string; publicKey: string | null }>>();
 // Глобальный rate-limiter
 const rateLimitMap = new Map<string, { count: number; resetAt: number }>();
 
@@ -345,6 +347,18 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 						});
 					}
 					pendingFriendRequests.delete(userId);
+				}
+
+				// Доставка офлайн-запросов auto_friend (claim_invite)
+				const pendingAuto = pendingAutoFriends.get(userId);
+				if (pendingAuto) {
+					for (const entry of pendingAuto) {
+						socket.emit('auto_friend_added', {
+							userId: entry.userId,
+							publicKey: entry.publicKey,
+						});
+					}
+					pendingAutoFriends.delete(userId);
 				}
 
 				const pendingAccepts = pendingFriendAccepts.get(userId);
@@ -587,6 +601,73 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 			}
 		});
 
+		socket.on('claim_invite', (data: { inviterUserId: string }) => {
+			try {
+				if (!currentUserId) {
+					socket.emit('error', { message: 'Not registered' });
+					return;
+				}
+
+				const _userData_ci = users.get(currentUserId);
+				if (_userData_ci) _userData_ci.lastSeen = Date.now();
+
+				if (!checkRateLimit(currentUserId)) {
+					socket.emit('error', { message: 'Rate limited' });
+					return;
+				}
+
+				const { inviterUserId } = data;
+				if (
+					!inviterUserId ||
+					typeof inviterUserId !== 'string' ||
+					inviterUserId.length > MAX_USER_ID_LENGTH
+				) {
+					socket.emit('error', { message: 'Invalid inviter' });
+					return;
+				}
+
+				if (inviterUserId === currentUserId) {
+					socket.emit('error', { message: 'Cannot invite yourself' });
+					return;
+				}
+
+				const inviter = users.get(inviterUserId);
+				const claimant = users.get(currentUserId);
+
+				// Если приглашающий онлайн — отправляем ему auto_friend_added
+				if (inviter && inviter.socket) {
+					inviter.socket.emit('auto_friend_added', {
+						userId: currentUserId,
+						publicKey: claimant?.publicKey ?? null,
+					});
+					// Отправляем подтверждение отправителю с publicKey приглашающего
+					socket.emit('invite_claimed', {
+						inviterUserId,
+						publicKey: inviter.publicKey,
+					});
+				} else {
+					// Приглашающий офлайн — сохраняем в очередь
+					const existing = pendingAutoFriends.get(inviterUserId) || [];
+					if (existing.length >= MAX_PENDING_AUTO_FRIENDS) {
+						existing.shift();
+					}
+					existing.push({
+						userId: currentUserId,
+						publicKey: claimant?.publicKey ?? null,
+					});
+					pendingAutoFriends.set(inviterUserId, existing);
+					// Отправляем без publicKey (будет получен через friend_accept)
+					socket.emit('invite_claimed', {
+						inviterUserId,
+						publicKey: null,
+					});
+				}
+			} catch (err) {
+				console.error('[claim_invite] Error:', err);
+				socket.emit('error', { message: 'Internal error' });
+			}
+		});
+
 		socket.on('message', (data: { to: string; ciphertext: string; nonce: string }) => {
 			try {
 				if (!currentUserId) {
@@ -811,16 +892,16 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 						return;
 					}
 
-				// Проверить, не занят ли target пользователь другим звонком.
-				// Если передан callId и он совпадает с активным звонком target'а —
-				// это renegotiation уже существующего звонка, пропускаем проверку.
-				if (userActiveCall.has(targetUserId)) {
-					const busyCallId = userActiveCall.get(targetUserId);
-					if (!callId || busyCallId !== callId) {
-						socket.emit('error', { message: 'User is busy' });
-						return;
+					// Проверить, не занят ли target пользователь другим звонком.
+					// Если передан callId и он совпадает с активным звонком target'а —
+					// это renegotiation уже существующего звонка, пропускаем проверку.
+					if (userActiveCall.has(targetUserId)) {
+						const busyCallId = userActiveCall.get(targetUserId);
+						if (!callId || busyCallId !== callId) {
+							socket.emit('error', { message: 'User is busy' });
+							return;
+						}
 					}
-				}
 
 					// Проверка на активный звонок
 					const existingCallId = userActiveCall.get(currentUserId);
@@ -1198,7 +1279,9 @@ function gracefulShutdown(signal: string): void {
 			', Pending calls: ' +
 			pendingCallOffers.size +
 			', Pending friend requests: ' +
-			pendingFriendRequests.size,
+			pendingFriendRequests.size +
+			', Pending auto-friends: ' +
+			pendingAutoFriends.size,
 	);
 
 	// Завершить все активные звонки
@@ -1225,6 +1308,7 @@ function gracefulShutdown(signal: string): void {
 	activeCalls.clear();
 	userActiveCall.clear();
 	pendingCallOffers.clear();
+	pendingAutoFriends.clear();
 
 	io.close();
 	httpServer.close(() => process.exit(0));
