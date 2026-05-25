@@ -189,7 +189,7 @@ voidchat-server/
 ├── uninstall.sh          # Скрипт полного удаления сервера
 ├── README.md
 ├── src/
-│   └── server.ts         # Единственный файл сервера (~800 строк)
+│   └── server.ts         # Единственный файл сервера (~1318 строк)
 └── dist/
     ├── server.js
     └── server.d.ts

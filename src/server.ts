@@ -17,7 +17,7 @@ const TURN_USERNAME = process.env.TURN_USERNAME || '';
 const TURN_CREDENTIAL = process.env.TURN_CREDENTIAL || '';
 
 if (TURN_HOST) {
-	console.log(`[TURN] relay at ${TURN_HOST}:3478 (user: ${TURN_USERNAME})`);
+	console.log(`[TURN] relay at ${TURN_HOST}:3478`);
 } else {
 	console.log('[TURN] not configured (STUN-only, set TURN_HOST env var for relay across NAT)');
 }
@@ -41,6 +41,7 @@ const httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
 			JSON.stringify({
 				status: 'ok',
 				uptime: Math.floor((Date.now() - STARTED_AT) / 1000),
+				connections: io.engine.clientsCount,
 				timestamp: new Date().toISOString(),
 			}),
 		);
@@ -209,18 +210,14 @@ function cleanupPresence(): void {
 		if (now - data.lastSeen > TIMEOUT) {
 			const socket = data.socket;
 
-			// Если у пользователя был активный звонок — завершить
+			// Если у пользователя был активный звонок — завершить через cleanupCall
 			const activeCallId = userActiveCall.get(userId);
 			if (activeCallId) {
 				const session = activeCalls.get(activeCallId);
 				if (session) {
-					// Определить второго участника
-					const _otherId =
-						session.callerId === userId ? session.calleeId : session.callerId;
+					// Определить второго участника и отправить call_ended
 					const otherSocket =
 						session.callerId === userId ? session.calleeSocket : session.callerSocket;
-
-					// Отправить call_ended второму участнику ДО очистки сессии
 					if (otherSocket) {
 						otherSocket.emit('call_ended', {
 							callId: activeCallId,
@@ -230,40 +227,17 @@ function cleanupPresence(): void {
 							endedBy: userId,
 						});
 					}
-
-					// Очистить таймаут
-					if (session.timeoutHandle) {
-						clearTimeout(session.timeoutHandle);
-						session.timeoutHandle = null;
-					}
-					// Удалить из userActiveCall
-					if (userActiveCall.get(session.callerId) === activeCallId) {
-						userActiveCall.delete(session.callerId);
-					}
-					if (session.calleeId && userActiveCall.get(session.calleeId) === activeCallId) {
-						userActiveCall.delete(session.calleeId);
-					}
-					// Очистить pendingCallOffers
-					if (session.calleeId) {
-						const pending = pendingCallOffers.get(session.calleeId);
-						if (pending) {
-							const filtered = pending.filter(p => p.callId !== activeCallId);
-							if (filtered.length === 0) {
-								pendingCallOffers.delete(session.calleeId);
-							} else {
-								pendingCallOffers.set(session.calleeId, filtered);
-							}
-						}
-					}
-					activeCalls.delete(activeCallId);
 				}
+				cleanupCall(activeCallId, 'offline');
 			}
 
 			if (socket) {
 				io.emit('presence', { userId, online: false });
+				users.delete(userId);
 				socket.disconnect();
+			} else {
+				users.delete(userId);
 			}
-			users.delete(userId);
 		}
 	}
 }
@@ -710,7 +684,15 @@ io.on('connection', (socket: import('socket.io').Socket) => {
 					const existing = pendingMessages.get(to) || [];
 					const MAX_PENDING_MESSAGES = 1000;
 					if (existing.length >= MAX_PENDING_MESSAGES) {
-						existing.shift();
+						const dropped = existing.shift()!;
+						const originalSender = users.get(dropped.fromUserId);
+						if (originalSender?.socket) {
+							originalSender.socket.emit('message_failed', {
+								to,
+								nonce: dropped.nonce,
+								reason: 'queue_full',
+							});
+						}
 					}
 					existing.push({
 						fromUserId: currentUserId,
@@ -1280,6 +1262,8 @@ function gracefulShutdown(signal: string): void {
 			pendingCallOffers.size +
 			', Pending friend requests: ' +
 			pendingFriendRequests.size +
+			', Pending friend accepts: ' +
+			pendingFriendAccepts.size +
 			', Pending auto-friends: ' +
 			pendingAutoFriends.size,
 	);

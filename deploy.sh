@@ -360,6 +360,10 @@ else
     log "Порт $PORT свободен"
 fi
 
+# Сохраняем PORT для использования update.sh и другими скриптами
+echo "$PORT" > /etc/voidchat-port
+chmod 644 /etc/voidchat-port
+
 pm2 delete voidchat-server 2>/dev/null || true
 
 # Создаём директорию для логов (pm2 не создаёт её сам)

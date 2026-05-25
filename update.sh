@@ -14,11 +14,10 @@ set -euo pipefail
 SERVER_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SERVER_DIR"
 
-# Определяем PORT: сперва из переменной окружения, потом из deploy.sh, потом 9001
-if [ -f deploy.sh ]; then
-	# Из строки PORT="${PORT:-9001}" достаём число
-	DEPLOY_PORT=$(grep '^PORT=' deploy.sh | head -1 | sed 's/.*:-\([0-9]*\)}.*/\1/' || true)
-	PORT="${PORT:-${DEPLOY_PORT:-9001}}"
+# Определяем PORT: сперва из переменной окружения, потом из /etc/voidchat-port, потом 9001
+if [ -f /etc/voidchat-port ]; then
+	FILE_PORT=$(cat /etc/voidchat-port)
+	PORT="${PORT:-${FILE_PORT:-9001}}"
 else
 	PORT="${PORT:-9001}"
 fi
