@@ -7,6 +7,9 @@ import type { Server as SocketIOServer } from 'socket.io';
 import { MAX_CIPHERTEXT_LENGTH, MAX_NONCE_LENGTH, MAX_PENDING_MESSAGES } from '../config.js';
 import { users, pendingMessages } from '../state.js';
 import { checkRateLimit } from '../utils.js';
+import { incEvent, incError, incMessage } from '../metrics.js';
+import { captureError } from '../sentry.js';
+import { logger } from '../logger.js';
 
 export function setupMessageHandlers(
 	socket: Socket,
@@ -50,6 +53,9 @@ export function setupMessageHandlers(
 				return;
 			}
 
+			incEvent('message');
+			incMessage();
+
 			const target = users.get(to);
 			if (!target?.socket) {
 				// Получатель офлайн — сохраняем в очередь
@@ -90,7 +96,8 @@ export function setupMessageHandlers(
 
 			socket.emit('message_sent', { to, ciphertext, nonce, timestamp: Date.now() });
 		} catch (err) {
-			console.error('[message] Error:', err);
+			incError('message');
+			logger.error({ err, event: 'message', userId: getCurrentUserId() }, 'Error in message');
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -117,7 +124,12 @@ export function setupMessageHandlers(
 				target.socket.emit('messages_read', { readBy: currentUserId });
 			}
 		} catch (err) {
-			console.error('[messages_read] Error:', err);
+			captureError(err, { event: 'messages_read', userId: getCurrentUserId() });
+			incError('messages_read');
+			logger.error(
+				{ err, event: 'messages_read', userId: getCurrentUserId() },
+				'Error in messages_read',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -162,7 +174,12 @@ export function setupMessageHandlers(
 			}
 			// Fire-and-forget — не шлём подтверждение клиенту
 		} catch (err) {
-			console.error('[delete_message] Error:', err);
+			captureError(err, { event: 'delete_message', userId: getCurrentUserId() });
+			incError('delete_message');
+			logger.error(
+				{ err, event: 'delete_message', userId: getCurrentUserId() },
+				'Error in delete_message',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});

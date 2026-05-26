@@ -39,3 +39,14 @@ export const SOCKET_IO_PING_TIMEOUT = 20000;
 
 // Graceful shutdown
 export const SHUTDOWN_FORCE_EXIT_MS = 10000;
+
+// Pino-логирование
+export const LOG_LEVEL: string = process.env.LOG_LEVEL || 'info';
+export const LOG_FORMAT: string = process.env.LOG_FORMAT || 'pretty';
+
+// Error Tracking (Sentry/GlitchTip)
+export const SENTRY_DSN: string = process.env.SENTRY_DSN || '';
+
+// Prometheus-метрики
+export const METRICS_ENABLED: boolean = process.env.METRICS_ENABLED === 'true';
+// export const METRICS_PORT: number = parseInt(process.env.METRICS_PORT || String(PORT), 10);

@@ -25,6 +25,7 @@ import {
 	users,
 	rateLimitMap,
 } from './state.js';
+import { logger } from './logger.js';
 
 // ---------------------------------------------------------------------------
 // Rate limiting
@@ -154,21 +155,18 @@ export function gracefulShutdown(
 	httpServer: HttpServer,
 	presenceInterval: ReturnType<typeof setInterval>,
 ): void {
-	console.log(`\nReceived ${signal}, shutting down gracefully...`);
+	logger.info({ signal }, 'Shutting down gracefully...');
 	clearInterval(presenceInterval);
-	console.log(
-		'[shutdown] Active calls: ' +
-			activeCalls.size +
-			', Pending messages: ' +
-			pendingMessages.size +
-			', Pending calls: ' +
-			pendingCallOffers.size +
-			', Pending friend requests: ' +
-			pendingFriendRequests.size +
-			', Pending friend accepts: ' +
-			pendingFriendAccepts.size +
-			', Pending auto-friends: ' +
-			pendingAutoFriends.size,
+	logger.info(
+		{
+			activeCalls: activeCalls.size,
+			pendingMessages: pendingMessages.size,
+			pendingCalls: pendingCallOffers.size,
+			pendingFriendRequests: pendingFriendRequests.size,
+			pendingFriendAccepts: pendingFriendAccepts.size,
+			pendingAutoFriends: pendingAutoFriends.size,
+		},
+		'Graceful shutdown — pending state',
 	);
 
 	// Завершить все активные звонки
@@ -201,7 +199,7 @@ export function gracefulShutdown(
 	httpServer.close(() => process.exit(0));
 	// Force exit after 10s if graceful shutdown hangs
 	setTimeout(() => {
-		console.error('[shutdown] Forced exit after timeout');
+		logger.fatal({ timeoutMs: SHUTDOWN_FORCE_EXIT_MS }, 'Forced exit after shutdown timeout');
 		process.exit(1);
 	}, SHUTDOWN_FORCE_EXIT_MS);
 }

@@ -192,6 +192,34 @@ npm prune --omit=dev &>/dev/null
 log "Dev-зависимости удалены"
 
 # --------------------------------------------------------------
+# 7b. Создание конфигурационного файла мониторинга
+# --------------------------------------------------------------
+ENV_FILE="/etc/voidchat-server.env"
+if [ ! -f "$ENV_FILE" ]; then
+    log "Создаём конфигурационный файл мониторинга ($ENV_FILE)..."
+    cat > "$ENV_FILE" <<'ENVEOF'
+# === Мониторинг и логирование ===
+
+# Sentry/GlitchTip DSN для error tracking (оставьте пустым для отключения)
+# Совместим с GlitchTip (self-hosted Sentry)
+# SENTRY_DSN=https://key@glitchtip.example.com/1
+
+# Уровень логирования: debug | info | warn | error | silent
+# LOG_LEVEL=info
+
+# Формат логов: pretty | json
+# LOG_FORMAT=pretty
+
+# Включить Prometheus-метрики (true/false)
+# METRICS_ENABLED=false
+ENVEOF
+    chmod 644 "$ENV_FILE"
+    log "Файл $ENV_FILE создан. Отредактируйте его для настройки мониторинга."
+else
+    log "Файл конфигурации $ENV_FILE уже существует"
+fi
+
+# --------------------------------------------------------------
 # 8. Установка pm2
 # --------------------------------------------------------------
 if ! command -v pm2 &>/dev/null; then
@@ -373,19 +401,28 @@ mkdir -p ~/voidchat-server/logs
 #   - Node.js однопоточный, кластеризация на 1 ядре даст только оверхед
 #   - Socket.IO асинхронный — 1 процесс держит тысячи соединений
 # TURN_HOST передаётся как env — сервер отдаёт его в /turn-config для WebRTC
+# Если существует /etc/voidchat-server.env — он передаётся в --env-file
+PM2_ARGS=(
+    --name voidchat-server
+    --log-date-format "YYYY-MM-DD HH:mm:ss Z"
+    --max-memory-restart "500M"
+    --restart-delay 3000
+    --max-restarts 5
+    --env NODE_ENV=production
+    --merge-logs
+    --output ~/voidchat-server/logs/out.log
+    --error ~/voidchat-server/logs/err.log
+)
+
+if [ -f /etc/voidchat-server.env ]; then
+    PM2_ARGS+=(--env-file /etc/voidchat-server.env)
+    log "Конфигурация мониторинга загружена из /etc/voidchat-server.env"
+fi
+
 TURN_HOST="$TURN_HOST" \
 TURN_USERNAME="voidchat" \
 TURN_CREDENTIAL="$TURN_SECRET" \
-pm2 start dist/server.js \
-    --name voidchat-server \
-    --log-date-format "YYYY-MM-DD HH:mm:ss Z" \
-    --max-memory-restart "500M" \
-    --restart-delay 3000 \
-    --max-restarts 5 \
-    --env NODE_ENV=production \
-    --merge-logs \
-    --output ~/voidchat-server/logs/out.log \
-    --error ~/voidchat-server/logs/err.log
+pm2 start dist/server.js "${PM2_ARGS[@]}"
 
 log "Сервер запущен (fork, 1 процесс, лимит памяти 500M)"
 
@@ -425,6 +462,25 @@ if pm2 pid voidchat-server &>/dev/null; then
 else
     warn "Проверьте статус: pm2 status"
 fi
+
+# --------------------------------------------------------------
+# 16b. Информация о мониторинге
+# --------------------------------------------------------------
+if [ -f /etc/voidchat-server.env ]; then
+    # Проверяем SENTRY_DSN (не закомментирован и не пуст)
+    if grep -q "^SENTRY_DSN=" /etc/voidchat-server.env 2>/dev/null && \
+       ! grep -q "^#.*SENTRY_DSN" /etc/voidchat-server.env 2>/dev/null; then
+        SENTRY_DSN_VAL=$(grep "^SENTRY_DSN=" /etc/voidchat-server.env | cut -d= -f2-)
+        if [ -n "$SENTRY_DSN_VAL" ]; then
+            log "Sentry/GlitchTip error tracking enabled"
+        fi
+    fi
+    # Проверяем METRICS_ENABLED (активное значение, не закомментированное)
+    if grep -q "^METRICS_ENABLED=true" /etc/voidchat-server.env 2>/dev/null; then
+        log "Prometheus metrics enabled on port :$PORT/metrics"
+    fi
+fi
+log "Для настройки мониторинга отредактируйте /etc/voidchat-server.env"
 
 # Внешний IP (определён ранее в шаге 13)
 IP="$TURN_HOST"
@@ -467,6 +523,7 @@ echo -e "   Health-check:     ${BOLD}$CONNECT_URL/${NC}"
 echo -e "   UFW:              активен (порт $PORT_DISPLAY, SSH)"
 echo -e "   Open files:       65536"
 echo -e "   Лог-ротация:      10 MB / 7 дней / сжатие"
+echo -e "   Мониторинг:      /etc/voidchat-server.env"
 echo ""
 echo -e " ${YELLOW}💡 В приложении введите только IP: ${BOLD}$IP${NC} (без http:// и порта)"
 echo ""

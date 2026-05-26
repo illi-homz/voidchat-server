@@ -15,6 +15,9 @@ import {
 import { users, activeCalls, userActiveCall, pendingCallOffers } from '../state.js';
 import type { MediaType, CallSession } from '../types.js';
 import { checkRateLimit, cleanupCall } from '../utils.js';
+import { incEvent, incError } from '../metrics.js';
+import { captureError } from '../sentry.js';
+import { logger } from '../logger.js';
 
 export function setupCallHandlers(
 	socket: Socket,
@@ -61,6 +64,8 @@ export function setupCallHandlers(
 					socket.emit('error', { message: 'Invalid call offer' });
 					return;
 				}
+
+				incEvent('call_offer');
 
 				const targetUser = users.get(targetUserId);
 				// Если targetUser не найден — обработать как офлайн (поставить в очередь)
@@ -202,7 +207,11 @@ export function setupCallHandlers(
 					mediaType,
 				});
 			} catch (err) {
-				console.error('[call_offer] Error:', err);
+				incError('call_offer');
+				logger.error(
+					{ err, event: 'call_offer', userId: getCurrentUserId(), callId: data.callId },
+					'Error in call_offer',
+				);
 				socket.emit('error', { message: 'Internal error' });
 			}
 		},
@@ -229,6 +238,8 @@ export function setupCallHandlers(
 				socket.emit('error', { message: 'Invalid call accept' });
 				return;
 			}
+
+			incEvent('call_accept');
 
 			const session = activeCalls.get(callId);
 			if (!session) {
@@ -273,7 +284,11 @@ export function setupCallHandlers(
 			userActiveCall.set(session.calleeId, callId);
 			session.callerSocket.emit('call_accepted', { callId, sdp });
 		} catch (err) {
-			console.error('[call_accept] Error:', err);
+			incError('call_accept');
+			logger.error(
+				{ err, event: 'call_accept', userId: getCurrentUserId(), callId: data.callId },
+				'Error in call_accept',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -311,10 +326,20 @@ export function setupCallHandlers(
 				return;
 			}
 
+			incEvent('call_decline');
 			session.callerSocket.emit('call_declined', { callId, reason: 'declined' });
 			cleanupCall(callId, 'declined');
 		} catch (err) {
-			console.error('[call_decline] Error:', err);
+			captureError(err, {
+				event: 'call_decline',
+				userId: getCurrentUserId(),
+				callId: data.callId,
+			});
+			incError('call_decline');
+			logger.error(
+				{ err, event: 'call_decline', userId: getCurrentUserId(), callId: data.callId },
+				'Error in call_decline',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -352,6 +377,8 @@ export function setupCallHandlers(
 				return;
 			}
 
+			incEvent('call_hangup');
+
 			const duration = session.connectedAt
 				? Math.floor((Date.now() - session.connectedAt) / 1000)
 				: 0;
@@ -368,7 +395,11 @@ export function setupCallHandlers(
 
 			cleanupCall(callId, 'ended');
 		} catch (err) {
-			console.error('[call_hangup] Error:', err);
+			incError('call_hangup');
+			logger.error(
+				{ err, event: 'call_hangup', userId: getCurrentUserId(), callId: data.callId },
+				'Error in call_hangup',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -411,6 +442,8 @@ export function setupCallHandlers(
 				return;
 			}
 
+			incEvent('ice_candidate');
+
 			const otherSocket =
 				session.callerId === currentUserId ? session.calleeSocket : session.callerSocket;
 
@@ -418,7 +451,16 @@ export function setupCallHandlers(
 				otherSocket.emit('ice_candidate', { callId, candidate });
 			}
 		} catch (err) {
-			console.error('[ice_candidate] Error:', err);
+			captureError(err, {
+				event: 'ice_candidate',
+				userId: getCurrentUserId(),
+				callId: data.callId,
+			});
+			incError('ice_candidate');
+			logger.error(
+				{ err, event: 'ice_candidate', userId: getCurrentUserId(), callId: data.callId },
+				'Error in ice_candidate',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});

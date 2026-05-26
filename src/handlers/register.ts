@@ -19,6 +19,9 @@ import {
 	pendingAutoFriends,
 } from '../state.js';
 import { cleanupCall } from '../utils.js';
+import { incEvent, incError } from '../metrics.js';
+import { captureError } from '../sentry.js';
+import { logger } from '../logger.js';
 
 export function setupRegisterHandlers(
 	socket: Socket,
@@ -58,8 +61,9 @@ export function setupRegisterHandlers(
 						session.calleeSocket = socket;
 					}
 
-					console.log(
-						`[call] Transferred socket for call ${activeCallId} (${userRole} reconnected)`,
+					logger.info(
+						{ callId: activeCallId, userId, userRole },
+						'Socket transferred for active call',
 					);
 
 					// Disconnect old socket silently (without triggering cleanup)
@@ -88,6 +92,7 @@ export function setupRegisterHandlers(
 
 			socket.emit('registered', { userId });
 			io.emit('presence', { userId, online: true });
+			incEvent('register');
 
 			const pending = pendingFriendRequests.get(userId);
 			if (pending) {
@@ -162,7 +167,9 @@ export function setupRegisterHandlers(
 				pendingCallOffers.delete(userId);
 			}
 		} catch (err) {
-			console.error('[register] Error:', err);
+			captureError(err, { event: 'register', userId: data?.userId });
+			incError('register');
+			logger.error({ err, event: 'register', userId: data?.userId }, 'Error in register');
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});

@@ -13,6 +13,9 @@ import {
 	MAX_PENDING_AUTO_FRIENDS,
 } from '../state.js';
 import { checkRateLimit } from '../utils.js';
+import { incEvent, incError } from '../metrics.js';
+import { captureError } from '../sentry.js';
+import { logger } from '../logger.js';
 
 export function setupFriendHandlers(
 	socket: Socket,
@@ -47,6 +50,8 @@ export function setupFriendHandlers(
 				return;
 			}
 
+			incEvent('friend_request');
+
 			const target = users.get(targetUserId);
 			const requester = users.get(currentUserId);
 
@@ -73,7 +78,11 @@ export function setupFriendHandlers(
 				targetPublicKey: target.publicKey,
 			});
 		} catch (err) {
-			console.error('[friend_request] Error:', err);
+			incError('friend_request');
+			logger.error(
+				{ err, event: 'friend_request', userId: getCurrentUserId() },
+				'Error in friend_request',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -103,6 +112,8 @@ export function setupFriendHandlers(
 				return;
 			}
 
+			incEvent('friend_accept');
+
 			const initiator = users.get(targetUserId);
 			const acceptor = users.get(currentUserId);
 
@@ -127,7 +138,11 @@ export function setupFriendHandlers(
 				targetPublicKey: initiator?.publicKey ?? null,
 			});
 		} catch (err) {
-			console.error('[friend_accept] Error:', err);
+			incError('friend_accept');
+			logger.error(
+				{ err, event: 'friend_accept', userId: getCurrentUserId() },
+				'Error in friend_accept',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -163,7 +178,12 @@ export function setupFriendHandlers(
 				target.socket.emit('friend_declined', { fromUserId: currentUserId });
 			}
 		} catch (err) {
-			console.error('[friend_decline] Error:', err);
+			captureError(err, { event: 'friend_decline', userId: getCurrentUserId() });
+			incError('friend_decline');
+			logger.error(
+				{ err, event: 'friend_decline', userId: getCurrentUserId() },
+				'Error in friend_decline',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});
@@ -231,7 +251,12 @@ export function setupFriendHandlers(
 				});
 			}
 		} catch (err) {
-			console.error('[claim_invite] Error:', err);
+			captureError(err, { event: 'claim_invite', userId: getCurrentUserId() });
+			incError('claim_invite');
+			logger.error(
+				{ err, event: 'claim_invite', userId: getCurrentUserId() },
+				'Error in claim_invite',
+			);
 			socket.emit('error', { message: 'Internal error' });
 		}
 	});

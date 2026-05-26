@@ -17,11 +17,23 @@ import { setupRegisterHandlers } from './handlers/register.js';
 import { setupMessageHandlers } from './handlers/messages.js';
 import { setupFriendHandlers } from './handlers/friends.js';
 import { setupCallHandlers } from './handlers/calls.js';
+import {
+	metricsEnabled,
+	initMetrics,
+	metricsHandler,
+	incError,
+	updateConnections,
+	stopMetrics,
+} from './metrics.js';
+import { initSentry, captureError } from './sentry.js';
+import { logger } from './logger.js';
 
 if (TURN_HOST) {
-	console.log(`[TURN] relay at ${TURN_HOST}:3478`);
+	logger.info({ turn: { host: TURN_HOST, port: 3478 } }, 'TURN relay configured');
 } else {
-	console.log('[TURN] not configured (STUN-only, set TURN_HOST env var for relay across NAT)');
+	logger.info(
+		'TURN not configured — STUN-only mode (set TURN_HOST env var for relay across NAT)',
+	);
 }
 
 export { checkRateLimit, cleanupCall, cleanupPresence } from './utils.js';
@@ -74,6 +86,12 @@ export function createApp(httpServer: import('http').Server) {
 			return;
 		}
 
+		// Prometheus-метрики (только если METRICS_ENABLED=true)
+		if (req.url === '/metrics' && req.method === 'GET' && metricsEnabled) {
+			metricsHandler(req, res);
+			return;
+		}
+
 		// Все остальные запросы — 404
 		res.writeHead(404, { 'Content-Type': 'text/plain' });
 		res.end('Not found');
@@ -119,7 +137,9 @@ export function createApp(httpServer: import('http').Server) {
 						user.lastSeen = Date.now();
 					}
 				} catch (err) {
-					console.error('[heartbeat] Error:', err);
+					captureError(err, { event: 'heartbeat', userId: getCurrentUserId() });
+					logger.error({ err, event: 'heartbeat' }, 'Error in heartbeat');
+					incError('heartbeat');
 					socket.emit('error', { message: 'Internal error' });
 				}
 			});
@@ -141,7 +161,9 @@ export function createApp(httpServer: import('http').Server) {
 						if (userData) userData.lastSeen = Date.now();
 					}
 				} catch (err) {
-					console.error('[get_presence] Error:', err);
+					captureError(err, { event: 'get_presence', userId: getCurrentUserId() });
+					logger.error({ err, event: 'get_presence' }, 'Error in get_presence');
+					incError('get_presence');
 					socket.emit('error', { message: 'Internal error' });
 				}
 			});
@@ -152,6 +174,9 @@ export function createApp(httpServer: import('http').Server) {
 			setupMessageHandlers(socket, io, getCurrentUserId);
 			setupFriendHandlers(socket, io, getCurrentUserId);
 			setupCallHandlers(socket, io, getCurrentUserId);
+
+			// Обновление метрик после настройки хендлеров
+			updateConnections(io.engine.clientsCount, users.size, activeCalls.size);
 
 			// ---- Disconnect ----
 
@@ -192,25 +217,37 @@ export function createApp(httpServer: import('http').Server) {
 						// на новом сокете) — ничего не делаем
 					}
 				} catch (err) {
-					console.error('[disconnect] Error:', err);
+					captureError(err, { event: 'disconnect', userId: getCurrentUserId() });
+					logger.error(
+						{ err, event: 'disconnect', userId: getCurrentUserId() },
+						'Error in disconnect',
+					);
+					incError('disconnect');
 					socket.emit('error', { message: 'Internal error' });
+				} finally {
+					updateConnections(io.engine.clientsCount, users.size, activeCalls.size);
 				}
 			});
 		} catch (err) {
-			console.error('[connection] Fatal error in connection handler:', err);
+			captureError(err, { event: 'connection' });
+			logger.error({ err, event: 'connection' }, 'Fatal error in connection handler');
+			incError('connection');
 			socket.emit('error', { message: 'Internal server error' });
 		}
 
 		// Add socket error handler
 		socket.on('error', err => {
-			console.error('[socket] Socket error:', err);
+			captureError(err, { event: 'socket_error' });
+			logger.error({ err, event: 'socket_error' }, 'Socket error');
 		});
 	});
 
 	// ---- Graceful shutdown (delegates to utils.js) ----
 
-	const gracefulShutdown = (signal: string) =>
+	const gracefulShutdown = (signal: string) => {
+		stopMetrics();
 		_gracefulShutdown(signal, io, httpServer, presenceInterval);
+	};
 
 	return { io, gracefulShutdown, rateLimitInterval, presenceInterval };
 }
@@ -220,26 +257,37 @@ export function createApp(httpServer: import('http').Server) {
 // ---------------------------------------------------------------------------
 
 if (!process.env.VITEST) {
+	// Инициализируем Sentry/GlitchTip до старта HTTP-сервера и регистрации process-обработчиков
+	initSentry();
+
 	const httpServer = createServer();
+	initMetrics();
 	// Интервалы зарегистрированы внутри createApp, здесь не используются
 	const { gracefulShutdown } = createApp(httpServer);
 
 	httpServer.listen(PORT, () => {
-		console.log(`VoidChat server running on http://0.0.0.0:${PORT}`);
-		console.log(`Health check: http://0.0.0.0:${PORT}/`);
+		logger.info({ port: PORT }, 'VoidChat server started');
+		logger.info({ url: `http://0.0.0.0:${PORT}/` }, 'Health check endpoint');
 	});
 
 	process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 	process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 	process.on('uncaughtException', err => {
-		console.error('[FATAL] Uncaught exception:', err);
+		logger.fatal({ err }, 'Uncaught exception');
+		captureError(err, { type: 'uncaughtException' });
 		gracefulShutdown('uncaughtException');
 		setTimeout(() => process.exit(1), 1000);
 	});
 
 	process.on('unhandledRejection', reason => {
-		console.error('[FATAL] Unhandled rejection:', reason);
+		logger.fatal(
+			{ err: reason instanceof Error ? reason : new Error(String(reason)) },
+			'Unhandled rejection',
+		);
+		captureError(reason instanceof Error ? reason : new Error(String(reason)), {
+			type: 'unhandledRejection',
+		});
 		gracefulShutdown('unhandledRejection');
 	});
 }

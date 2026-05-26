@@ -126,6 +126,13 @@ curl -sS https://raw.githubusercontent.com/illi-homz/voidchat-server/main/deploy
 | Переменная | По умолчанию | Описание |
 |------------|--------------|----------|
 | `PORT` | `9001` | Порт сервера |
+| `SENTRY_DSN` | — | DSN для Sentry/GlitchTip error tracking (пусто = отключено) |
+| `LOG_LEVEL` | `info` | Уровень логирования: `debug`, `info`, `warn`, `error`, `silent` |
+| `LOG_FORMAT` | `pretty` | Формат логов: `pretty` (цветной текст) или `json` (машинно-читаемый) |
+| `METRICS_ENABLED` | `false` | Включить Prometheus-метрики (`true`/`false`) |
+| `TURN_HOST` | авто | Внешний IP/домен TURN-сервера |
+| `TURN_USERNAME` | `voidchat` | Имя пользователя для TURN |
+| `TURN_CREDENTIAL` | авто | Пароль/секрет для TURN |
 
 ## Health Check
 
@@ -193,6 +200,51 @@ voidchat-server/
 └── dist/
     ├── server.js
     └── server.d.ts
+```
+
+## Мониторинг и observability
+
+Сервер поддерживает три опциональных механизма мониторинга, настраиваемых через переменные окружения (файл `/etc/voidchat-server.env` при деплое через `deploy.sh`):
+
+### Error Tracking (Sentry/GlitchTip)
+
+```bash
+SENTRY_DSN=https://key@glitchtip.example.com/1
+```
+
+Поддерживается любой DSN-совместимый бэкенд: [Sentry](https://sentry.io), [GlitchTip](https://glitchtip.com) (self-hosted), [PostHog](https://posthog.com), [Highlight](https://highlight.io). При передаче DSN все необработанные исключения автоматически отправляются в сервис.
+
+### Уровень и формат логирования
+
+```bash
+LOG_LEVEL=info       # debug | info | warn | error | silent
+LOG_FORMAT=pretty    # pretty (цветной) | json (структурированный)
+```
+
+- `LOG_FORMAT=pretty` — цветной, человеко-читаемый вывод (через `pino-pretty`)
+- `LOG_FORMAT=json` — структурированные JSON-логи для систем сбора логов (ELK, Loki, Datadog и т.п.)
+
+### Prometheus метрики
+
+```bash
+METRICS_ENABLED=true
+```
+
+При включении сервер отдаёт Prometheus-метрики на эндпоинте `GET /metrics` (на том же порту). Доступные метрики:
+- Количество активных WebSocket-соединений (`voidchat_connections`)
+- Количество активных звонков (`voidchat_active_calls`)
+- Время работы сервера (`voidchat_uptime_seconds`)
+- Гистограмма событий Socket.IO (`voidchat_events_total` по типу события)
+
+### Настройка на сервере
+
+При деплое через `deploy.sh` автоматически создаётся файл `/etc/voidchat-server.env` с закомментированными переменными. Для включения мониторинга:
+
+```bash
+# Раскомментируйте и установите нужные значения
+sudo nano /etc/voidchat-server.env
+pm2 restart voidchat-server --env-file /etc/voidchat-server.env
+# или просто: ./update.sh
 ```
 
 ## TURN сервер
