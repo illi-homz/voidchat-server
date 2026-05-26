@@ -401,28 +401,17 @@ mkdir -p ~/voidchat-server/logs
 #   - Node.js однопоточный, кластеризация на 1 ядре даст только оверхед
 #   - Socket.IO асинхронный — 1 процесс держит тысячи соединений
 # TURN_HOST передаётся как env — сервер отдаёт его в /turn-config для WebRTC
-# Если существует /etc/voidchat-server.env — он передаётся в --env-file
-PM2_ARGS=(
-    --name voidchat-server
-    --log-date-format "YYYY-MM-DD HH:mm:ss Z"
-    --max-memory-restart "500M"
-    --restart-delay 3000
-    --max-restarts 5
-    --env NODE_ENV=production
-    --merge-logs
-    --output ~/voidchat-server/logs/out.log
-    --error ~/voidchat-server/logs/err.log
-)
-
-if [ -f /etc/voidchat-server.env ]; then
-    PM2_ARGS+=(--env-file /etc/voidchat-server.env)
-    log "Конфигурация мониторинга загружена из /etc/voidchat-server.env"
+#
+# Используем ecosystem.config.cjs — он сам читает /etc/voidchat-server.env
+# и передаёт переменные через env секцию (pm2 7.x не поддерживает --env-file).
+if [ -f ecosystem.config.cjs ]; then
+    log "Запуск через ecosystem.config.cjs"
 fi
 
 TURN_HOST="$TURN_HOST" \
 TURN_USERNAME="voidchat" \
 TURN_CREDENTIAL="$TURN_SECRET" \
-pm2 start dist/server.js "${PM2_ARGS[@]}"
+pm2 start ecosystem.config.cjs
 
 log "Сервер запущен (fork, 1 процесс, лимит памяти 500M)"
 

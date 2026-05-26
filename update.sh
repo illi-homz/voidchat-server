@@ -151,29 +151,19 @@ if [ -z "${TURN_HOST:-}" ]; then
 	fi
 fi
 
-# Если существует /etc/voidchat-server.env — передаём его в --env-file
-PM2_ARGS=(
-		--name voidchat-server
-		--log-date-format "YYYY-MM-DD HH:mm:ss Z"
-		--max-memory-restart "500M"
-		--restart-delay 3000
-		--max-restarts 5
-		--env NODE_ENV=production
-		--merge-logs
-		--output ~/voidchat-server/logs/out.log
-		--error ~/voidchat-server/logs/err.log
-)
-
-if [ -f /etc/voidchat-server.env ]; then
-		PM2_ARGS+=(--env-file /etc/voidchat-server.env)
-		log "Конфигурация мониторинга загружена из /etc/voidchat-server.env"
+# Используем ecosystem.config.cjs — он сам читает /etc/voidchat-server.env
+# и передаёт переменные через env секцию (pm2 7.x не поддерживает --env-file).
+if [ -f ecosystem.config.cjs ]; then
+	log "Запуск через ecosystem.config.cjs"
+else
+	warn "ecosystem.config.cjs не найден, использую прямой запуск"
 fi
 
 TURN_HOST="$TURN_HOST" \
 TURN_USERNAME="${TURN_USERNAME:-voidchat}" \
 TURN_CREDENTIAL="${TURN_CREDENTIAL:-$TURN_SECRET}" \
-pm2 start dist/server.js "${PM2_ARGS[@]}"
-	log "Сервер запущен (pm2 start)"
+pm2 start ecosystem.config.cjs
+	log "Сервер запущен (pm2 start ecosystem.config.cjs)"
 
 pm2 save &>/dev/null
 log "Список pm2 сохранён"
