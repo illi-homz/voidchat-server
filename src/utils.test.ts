@@ -231,16 +231,13 @@ describe('cleanupCall', () => {
 		});
 	});
 
-	it('при reason="offline" отправляет call_timedout caller\'у', () => {
+	it('при reason="offline" не отправляет call_timedout (disconnect handler уже отправил call_ended)', () => {
 		const session = createSession();
 		activeCalls.set(session.callId, session);
 
 		cleanupCall(session.callId, 'offline');
 
-		expect(session.callerSocket.emit).toHaveBeenCalledWith('call_timedout', {
-			callId: session.callId,
-			reason: 'offline',
-		});
+		expect(session.callerSocket.emit).not.toHaveBeenCalled();
 	});
 
 	it('не отправляет callerSocket.emit при ended и declined', () => {

@@ -59,7 +59,8 @@ export function cleanupCall(
 	if (!session) return;
 
 	// Уведомить caller при таймауте
-	if ((reason === 'no_answer' || reason === 'offline') && session.callerSocket) {
+	// При 'offline' не шлём call_timedout — disconnect handler уже отправил call_ended
+	if (reason === 'no_answer' && session.callerSocket) {
 		session.callerSocket.emit('call_timedout', { callId, reason });
 	}
 

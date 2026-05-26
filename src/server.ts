@@ -199,9 +199,12 @@ export function createApp(httpServer: import('http').Server) {
 											? session.calleeSocket
 											: session.callerSocket;
 									if (otherSocket) {
+										const callDuration = session.connectedAt
+											? Math.floor((Date.now() - session.connectedAt) / 1000)
+											: 0;
 										otherSocket.emit('call_ended', {
 											callId: activeCallId,
-											duration: 0,
+											duration: callDuration,
 											endedBy: currentUserId,
 										});
 									}

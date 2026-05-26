@@ -177,6 +177,17 @@ export function setupFriendHandlers(
 			if (target?.socket) {
 				target.socket.emit('friend_declined', { fromUserId: currentUserId });
 			}
+
+			// Очистить pendingFriendRequests для currentUserId от запроса targetUserId
+			const pending = pendingFriendRequests.get(currentUserId);
+			if (pending) {
+				const filtered = pending.filter(req => req.fromUserId !== targetUserId);
+				if (filtered.length === 0) {
+					pendingFriendRequests.delete(currentUserId);
+				} else {
+					pendingFriendRequests.set(currentUserId, filtered);
+				}
+			}
 		} catch (err) {
 			captureError(err, { event: 'friend_decline', userId: getCurrentUserId() });
 			incError('friend_decline');
